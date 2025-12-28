@@ -1,0 +1,26 @@
+# Stock Finder Configuration
+
+scan:
+  # Minimum percentage gain to include in results
+  min_gain_pct: 500
+  # How many years back to look for gains
+  lookback_years: 3
+
+data:
+  # Enable caching of price data
+  cache_enabled: true
+  cache_dir: "data/cache"
+  # Delay between API calls (seconds) to avoid rate limiting
+  rate_limit_delay: 0.1
+  # Request timeout in seconds
+  timeout: 30
+
+output:
+  # Default output format: table, csv, json
+  default_format: "table"
+  # Directory to save results
+  save_dir: "output"
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"

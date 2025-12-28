@@ -1,0 +1,8 @@
+# Core dependencies
+yfinance>=0.2.36
+pandas>=2.0.0
+click>=8.1.0
+pyyaml>=6.0
+rich>=13.0.0  # For nice terminal tables
+pydantic>=2.0.0  # For config validation
+structlog>=24.0.0  # Structured logging
