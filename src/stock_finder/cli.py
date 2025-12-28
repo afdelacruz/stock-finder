@@ -18,6 +18,7 @@ from stock_finder.data.nasdaq_ftp import (
     get_nyse_tickers,
 )
 from stock_finder.data.yfinance_provider import YFinanceProvider
+from stock_finder.data.fmp_provider import FMPProvider
 from stock_finder.data.database import Database
 from stock_finder.output.formatters import format_as_csv, format_as_json, format_as_table, save_results
 from stock_finder.scanners.gainer_scanner import GainerScanner
@@ -103,6 +104,12 @@ def cli(ctx: click.Context, verbose: bool, config: str | None) -> None:
     default=None,
     help="Path to database file (default: data/stock_finder.db)",
 )
+@click.option(
+    "--provider",
+    type=click.Choice(["fmp", "yfinance"]),
+    default=None,
+    help="Data provider to use (default: fmp, falls back to yfinance if FMP unavailable)",
+)
 @click.pass_context
 def scan(
     ctx: click.Context,
@@ -116,6 +123,7 @@ def scan(
     save_dir: str | None,
     use_db: bool,
     db_path: str | None,
+    provider: str | None,
 ) -> None:
     """Scan stocks for significant gains."""
     settings = ctx.obj["settings"]
@@ -159,9 +167,20 @@ def scan(
 
     console.print(f"Scanning {len(ticker_list)} tickers for {scan_config.min_gain_pct}%+ gains over {scan_config.lookback_years} years...")
 
-    # Create scanner and run
-    provider = YFinanceProvider(settings.data)
-    scanner = GainerScanner(provider, scan_config)
+    # Create data provider (FMP by default, yfinance as fallback)
+    provider_choice = provider or settings.default_provider
+    if provider_choice == "fmp":
+        try:
+            data_provider = FMPProvider(settings.fmp)
+            console.print("[cyan]Using FMP data provider[/cyan]")
+        except ValueError as e:
+            console.print(f"[yellow]FMP unavailable ({e}), falling back to yfinance[/yellow]")
+            data_provider = YFinanceProvider(settings.data)
+    else:
+        data_provider = YFinanceProvider(settings.data)
+        console.print("[cyan]Using yfinance data provider[/cyan]")
+
+    scanner = GainerScanner(data_provider, scan_config)
 
     # Setup database if requested
     db = None
@@ -218,8 +237,14 @@ def scan(
     default=3,
     help="Years to look back",
 )
+@click.option(
+    "--provider",
+    type=click.Choice(["fmp", "yfinance"]),
+    default=None,
+    help="Data provider to use",
+)
 @click.pass_context
-def check(ctx: click.Context, ticker: str, years: int) -> None:
+def check(ctx: click.Context, ticker: str, years: int, provider: str | None) -> None:
     """Check a single ticker for gains."""
     settings = ctx.obj["settings"]
 
@@ -227,8 +252,17 @@ def check(ctx: click.Context, ticker: str, years: int) -> None:
     scan_config.lookback_years = years
     scan_config.min_gain_pct = 0  # Show any gain
 
-    provider = YFinanceProvider(settings.data)
-    scanner = GainerScanner(provider, scan_config)
+    # Create data provider
+    provider_choice = provider or settings.default_provider
+    if provider_choice == "fmp":
+        try:
+            data_provider = FMPProvider(settings.fmp)
+        except ValueError:
+            data_provider = YFinanceProvider(settings.data)
+    else:
+        data_provider = YFinanceProvider(settings.data)
+
+    scanner = GainerScanner(data_provider, scan_config)
 
     console.print(f"Checking {ticker.upper()} over {years} years...")
 

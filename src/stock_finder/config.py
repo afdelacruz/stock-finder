@@ -1,10 +1,25 @@
 """Configuration management."""
 
+import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+
+
+class FMPConfig(BaseModel):
+    """Configuration for FMP (Financial Modeling Prep) API."""
+
+    api_key: str | None = Field(default=None, description="FMP API key (loaded from FMP_API_KEY env var)")
+    base_url: str = Field(default="https://financialmodelingprep.com/api/v3")
+    batch_size: int = Field(default=50, description="Max tickers per batch request")
+    timeout: int = Field(default=30)
+
+    @classmethod
+    def from_env(cls) -> "FMPConfig":
+        """Load FMP config with API key from environment."""
+        return cls(api_key=os.environ.get("FMP_API_KEY"))
 
 
 class ScanConfig(BaseModel):
@@ -41,8 +56,10 @@ class Settings(BaseModel):
 
     scan: ScanConfig = Field(default_factory=ScanConfig)
     data: DataConfig = Field(default_factory=DataConfig)
+    fmp: FMPConfig = Field(default_factory=FMPConfig.from_env)
     output: OutputConfig = Field(default_factory=OutputConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    default_provider: str = Field(default="fmp", description="Default data provider: 'fmp' or 'yfinance'")
 
 
 def load_settings(config_path: Path | str | None = None) -> Settings:
