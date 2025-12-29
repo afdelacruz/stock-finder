@@ -36,11 +36,19 @@ class ScanConfig(BaseModel):
     lookback_years: int = Field(default=3, description="Years to look back")
 
 
+class CacheConfig(BaseModel):
+    """Configuration for disk cache."""
+
+    enabled: bool = Field(default=True, description="Enable disk caching")
+    cache_dir: str = Field(default="data/cache", description="Cache directory path")
+    ttl_hours: int = Field(default=24, description="TTL for recent data in hours")
+    max_size_gb: float = Field(default=5.0, description="Maximum cache size in GB")
+
+
 class DataConfig(BaseModel):
     """Configuration for data fetching."""
 
-    cache_enabled: bool = Field(default=True)
-    cache_dir: str = Field(default="data/cache")
+    cache: CacheConfig = Field(default_factory=CacheConfig)
     rate_limit_delay: float = Field(default=0.1, description="Seconds between API calls")
     timeout: int = Field(default=30)
 
