@@ -160,6 +160,12 @@ def cli(ctx: click.Context, verbose: bool, config: str | None) -> None:
     is_flag=True,
     help="Bypass cache and fetch fresh data",
 )
+@click.option(
+    "--workers",
+    type=int,
+    default=None,
+    help="Number of parallel workers (default: 10, use 1 for sequential)",
+)
 @click.pass_context
 def scan(
     ctx: click.Context,
@@ -175,6 +181,7 @@ def scan(
     db_path: str | None,
     provider: str | None,
     no_cache: bool,
+    workers: int | None,
 ) -> None:
     """Scan stocks for significant gains."""
     settings = ctx.obj["settings"]
@@ -221,7 +228,18 @@ def scan(
     # Create data provider with caching
     data_provider, _ = create_data_provider(settings, provider, no_cache)
 
-    scanner = GainerScanner(data_provider, scan_config)
+    # Configure parallel processing
+    parallel_config = settings.parallel.model_copy()
+    if workers is not None:
+        parallel_config.max_workers = workers
+        parallel_config.enabled = workers > 1
+
+    if parallel_config.enabled:
+        console.print(f"[dim]Parallel: {parallel_config.max_workers} workers[/dim]")
+    else:
+        console.print("[dim]Parallel: disabled (sequential)[/dim]")
+
+    scanner = GainerScanner(data_provider, scan_config, parallel_config)
 
     # Setup database if requested
     db = None
@@ -543,6 +561,12 @@ def neumann() -> None:
     is_flag=True,
     help="Bypass cache and fetch fresh data",
 )
+@click.option(
+    "--workers",
+    type=int,
+    default=None,
+    help="Number of parallel workers (default: 10, use 1 for sequential)",
+)
 @click.pass_context
 def score(
     ctx: click.Context,
@@ -552,6 +576,7 @@ def score(
     save: bool,
     limit: int | None,
     no_cache: bool,
+    workers: int | None,
 ) -> None:
     """Score stocks from a scan run against Neumann's criteria."""
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
@@ -574,8 +599,19 @@ def score(
     # Create data provider with caching
     data_provider, _ = create_data_provider(settings, provider, no_cache)
 
+    # Configure parallel processing
+    parallel_config = settings.parallel.model_copy()
+    if workers is not None:
+        parallel_config.max_workers = workers
+        parallel_config.enabled = workers > 1
+
+    if parallel_config.enabled:
+        console.print(f"[dim]Parallel: {parallel_config.max_workers} workers[/dim]")
+    else:
+        console.print("[dim]Parallel: disabled (sequential)[/dim]")
+
     # Create scorer
-    scorer = NeumannScorer(provider=data_provider, db=db)
+    scorer = NeumannScorer(provider=data_provider, db=db, parallel_config=parallel_config)
 
     # Get results to score
     scan_results = db.get_results(scan_run_id=scan_run_id)
@@ -803,6 +839,12 @@ def trendline() -> None:
     is_flag=True,
     help="Bypass cache and fetch fresh data",
 )
+@click.option(
+    "--workers",
+    type=int,
+    default=None,
+    help="Number of parallel workers (default: 10, use 1 for sequential)",
+)
 @click.pass_context
 def analyze(
     ctx: click.Context,
@@ -813,6 +855,7 @@ def analyze(
     save: bool,
     limit: int | None,
     no_cache: bool,
+    workers: int | None,
 ) -> None:
     """Analyze trendlines for stocks from a scan run."""
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
@@ -836,9 +879,20 @@ def analyze(
     # Create data provider with caching
     data_provider, _ = create_data_provider(settings, provider, no_cache)
 
+    # Configure parallel processing
+    parallel_config = settings.parallel.model_copy()
+    if workers is not None:
+        parallel_config.max_workers = workers
+        parallel_config.enabled = workers > 1
+
+    if parallel_config.enabled:
+        console.print(f"[dim]Parallel: {parallel_config.max_workers} workers[/dim]")
+    else:
+        console.print("[dim]Parallel: disabled (sequential)[/dim]")
+
     # Create analyzer
     config = TrendlineConfig()
-    analyzer = TrendlineAnalyzer(provider=data_provider, db=db, config=config)
+    analyzer = TrendlineAnalyzer(provider=data_provider, db=db, config=config, parallel_config=parallel_config)
 
     # Get results to analyze
     scan_results = db.get_results(scan_run_id=scan_run_id)

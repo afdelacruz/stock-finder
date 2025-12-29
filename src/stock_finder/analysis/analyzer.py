@@ -18,6 +18,8 @@ from stock_finder.analysis.trendline.swing_detection import (
 )
 from stock_finder.analysis.trendline.trendline_fitting import fit_trendline
 from stock_finder.analysis.trendline.touch_detection import detect_touches
+from stock_finder.config import ParallelConfig
+from stock_finder.utils.parallel import ParallelExecutor
 
 if TYPE_CHECKING:
     from stock_finder.data.database import Database
@@ -44,6 +46,7 @@ class TrendlineAnalyzer:
         provider: DataProvider,
         db: Database | None = None,
         config: TrendlineConfig | None = None,
+        parallel_config: ParallelConfig | None = None,
     ):
         """
         Initialize the analyzer.
@@ -52,10 +55,12 @@ class TrendlineAnalyzer:
             provider: Data provider for fetching historical prices
             db: Optional database for persisting results
             config: Configuration options (uses defaults if not provided)
+            parallel_config: Configuration for parallel processing
         """
         self.provider = provider
         self.db = db
         self.config = config or TrendlineConfig()
+        self.parallel_config = parallel_config or ParallelConfig()
 
     def analyze_stock(
         self,
@@ -242,6 +247,7 @@ class TrendlineAnalyzer:
         scan_results: list[dict],
         timeframe: str = "daily",
         save: bool = True,
+        on_progress: callable = None,
     ) -> list[TrendlineAnalysis]:
         """
         Analyze trendlines for multiple stocks.
@@ -250,10 +256,31 @@ class TrendlineAnalyzer:
             scan_results: List of scan result dicts
             timeframe: 'daily', 'weekly', or 'both'
             save: Whether to save results to database
+            on_progress: Optional callback(completed, total, ticker)
 
         Returns:
             List of TrendlineAnalysis results
         """
+        logger.info(
+            "Starting trendline analysis",
+            total_stocks=len(scan_results),
+            parallel=self.parallel_config.enabled,
+            workers=self.parallel_config.max_workers if self.parallel_config.enabled else 1,
+        )
+
+        if self.parallel_config.enabled:
+            return self._analyze_parallel(scan_results, timeframe, save, on_progress)
+        else:
+            return self._analyze_sequential(scan_results, timeframe, save, on_progress)
+
+    def _analyze_sequential(
+        self,
+        scan_results: list[dict],
+        timeframe: str,
+        save: bool,
+        on_progress: callable,
+    ) -> list[TrendlineAnalysis]:
+        """Analyze stocks sequentially."""
         results = []
         total = len(scan_results)
 
@@ -261,9 +288,11 @@ class TrendlineAnalyzer:
             ticker = scan_result["ticker"]
             logger.info(f"Analyzing {ticker}", progress=f"{i}/{total}")
 
+            if on_progress:
+                on_progress(i, total, ticker)
+
             try:
                 if timeframe == "both":
-                    # Analyze both daily and weekly
                     daily = self.analyze_stock(scan_result, "daily", save=save)
                     weekly = self.analyze_stock(scan_result, "weekly", save=save)
                     results.extend([daily, weekly])
@@ -273,6 +302,47 @@ class TrendlineAnalyzer:
             except Exception as e:
                 logger.warning(f"Failed to analyze {ticker}: {e}")
                 continue
+
+        return results
+
+    def _analyze_parallel(
+        self,
+        scan_results: list[dict],
+        timeframe: str,
+        save: bool,
+        on_progress: callable,
+    ) -> list[TrendlineAnalysis]:
+        """Analyze stocks in parallel."""
+        results: list[TrendlineAnalysis] = []
+        completed = 0
+
+        executor = ParallelExecutor(max_workers=self.parallel_config.max_workers)
+
+        def analyze_one(scan_result: dict) -> list[TrendlineAnalysis]:
+            """Analyze a single stock (returns list for 'both' timeframe)."""
+            if timeframe == "both":
+                daily = self.analyze_stock(scan_result, "daily", save=save)
+                weekly = self.analyze_stock(scan_result, "weekly", save=save)
+                return [daily, weekly]
+            else:
+                return [self.analyze_stock(scan_result, timeframe, save=save)]
+
+        def on_task_result(task_result):
+            nonlocal completed
+            completed += 1
+
+            if task_result.success and task_result.result is not None:
+                results.extend(task_result.result)
+
+            if on_progress:
+                ticker = task_result.item.get("ticker", "unknown")
+                on_progress(completed, len(scan_results), ticker)
+
+        executor.execute(
+            analyze_one,
+            scan_results,
+            on_result=on_task_result,
+        )
 
         return results
 

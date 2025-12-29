@@ -66,6 +66,13 @@ class LoggingConfig(BaseModel):
     level: str = Field(default="INFO")
 
 
+class ParallelConfig(BaseModel):
+    """Configuration for parallel processing."""
+
+    max_workers: int = Field(default=10, description="Maximum concurrent workers")
+    enabled: bool = Field(default=True, description="Enable parallel processing")
+
+
 class Settings(BaseModel):
     """Main settings container."""
 
@@ -74,6 +81,7 @@ class Settings(BaseModel):
     fmp: FMPConfig = Field(default_factory=FMPConfig.from_env)
     output: OutputConfig = Field(default_factory=OutputConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    parallel: ParallelConfig = Field(default_factory=ParallelConfig)
     default_provider: str = Field(default="fmp", description="Default data provider: 'fmp' or 'yfinance'")
 
 
