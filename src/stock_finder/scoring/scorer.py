@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 import structlog
 
+from stock_finder.config import ParallelConfig
 from stock_finder.data.base import DataProvider
 from stock_finder.data.database import Database
 from stock_finder.models.results import NeumannScore
@@ -17,6 +18,7 @@ from stock_finder.scoring.criteria.market_cap import MarketCapCriterion
 from stock_finder.scoring.criteria.near_lows import NearLowsCriterion
 from stock_finder.scoring.criteria.trendline_break import TrendlineBreakCriterion
 from stock_finder.scoring.criteria.volume_exhaustion import VolumeExhaustionCriterion
+from stock_finder.utils.parallel import ParallelExecutor
 
 logger = structlog.get_logger()
 
@@ -35,6 +37,7 @@ class NeumannScorer:
         provider: DataProvider | None = None,
         criteria: list[Criterion] | None = None,
         db: Database | None = None,
+        parallel_config: ParallelConfig | None = None,
     ):
         """
         Initialize the scorer.
@@ -44,10 +47,12 @@ class NeumannScorer:
                      If None, scoring will fail for stocks needing data.
             criteria: List of criteria to evaluate. If None, uses default 8 criteria.
             db: Database for saving scores. If None, scores are not persisted.
+            parallel_config: Configuration for parallel processing.
         """
         self.provider = provider
         self.criteria = criteria if criteria is not None else self._default_criteria()
         self.db = db
+        self.parallel_config = parallel_config or ParallelConfig()
 
     def _default_criteria(self) -> list[Criterion]:
         """Return the standard 8 Neumann criteria with default thresholds."""
@@ -149,8 +154,30 @@ class NeumannScorer:
             "Scoring scan run",
             scan_run_id=scan_run_id,
             total_stocks=len(scan_results),
+            parallel=self.parallel_config.enabled,
+            workers=self.parallel_config.max_workers if self.parallel_config.enabled else 1,
         )
 
+        if self.parallel_config.enabled:
+            scores = self._score_parallel(scan_results, save, on_progress)
+        else:
+            scores = self._score_sequential(scan_results, save, on_progress)
+
+        logger.info(
+            "Scoring complete",
+            scored=len(scores),
+            avg_score=sum(s.score for s in scores) / len(scores) if scores else 0,
+        )
+
+        return scores
+
+    def _score_sequential(
+        self,
+        scan_results: list[dict],
+        save: bool,
+        on_progress: Callable[[int, int, str], None] | None,
+    ) -> list[NeumannScore]:
+        """Score stocks sequentially."""
         scores = []
         for i, result in enumerate(scan_results):
             if on_progress:
@@ -160,7 +187,7 @@ class NeumannScorer:
                 score = self.score_stock(result)
                 scores.append(score)
 
-                if save:
+                if save and self.db:
                     self.db.add_neumann_score(score)
 
             except Exception as e:
@@ -170,10 +197,42 @@ class NeumannScorer:
                     error=str(e),
                 )
 
-        logger.info(
-            "Scoring complete",
-            scored=len(scores),
-            avg_score=sum(s.score for s in scores) / len(scores) if scores else 0,
+        return scores
+
+    def _score_parallel(
+        self,
+        scan_results: list[dict],
+        save: bool,
+        on_progress: Callable[[int, int, str], None] | None,
+    ) -> list[NeumannScore]:
+        """Score stocks in parallel."""
+        scores: list[NeumannScore] = []
+        completed = 0
+
+        executor = ParallelExecutor(max_workers=self.parallel_config.max_workers)
+
+        def on_task_result(task_result):
+            nonlocal completed
+            completed += 1
+
+            if task_result.success and task_result.result is not None:
+                score = task_result.result
+                scores.append(score)
+
+                # Save to database (thread-safe with SQLite in WAL mode)
+                if save and self.db:
+                    self.db.add_neumann_score(score)
+
+                if on_progress:
+                    on_progress(completed, len(scan_results), task_result.item["ticker"])
+            else:
+                if on_progress:
+                    on_progress(completed, len(scan_results), task_result.item.get("ticker", "unknown"))
+
+        executor.execute(
+            self.score_stock,
+            scan_results,
+            on_result=on_task_result,
         )
 
         return scores
