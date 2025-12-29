@@ -1,7 +1,8 @@
 """Data models for scan results."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
+from typing import Any
 
 import pandas as pd
 
@@ -68,3 +69,59 @@ class ScanResult:
             current_price=data["current_price"],
             days_to_peak=data["days_to_peak"],
         )
+
+
+@dataclass
+class NeumannScore:
+    """
+    Result of scoring a stock against Neumann's criteria at its ignition point.
+
+    Attributes:
+        ticker: Stock ticker symbol
+        scan_result_id: ID of the source scan_result record
+        score: Total score (0-8, number of criteria passed)
+        criteria_results: Dict mapping criterion name to pass/fail and value
+        drawdown: Drawdown from 2-year high at ignition
+        days_since_high: Trading days from 2-year high to ignition
+        range_position: Position in 2-year range (0=low, 1=high)
+        pct_from_sma50: Percent distance from 50-SMA
+        pct_from_sma200: Percent distance from 200-SMA
+        vol_ratio: Volume ratio vs 50-day average
+        market_cap_estimate: Estimated market cap at ignition
+        sma_crossover: Whether price crossed above SMA (trendline proxy)
+    """
+
+    ticker: str
+    scan_result_id: int
+    score: int
+    criteria_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    drawdown: float | None = None
+    days_since_high: int | None = None
+    range_position: float | None = None
+    pct_from_sma50: float | None = None
+    pct_from_sma200: float | None = None
+    vol_ratio: float | None = None
+    market_cap_estimate: float | None = None
+    sma_crossover: bool | None = None
+    # From original scan result for analysis
+    gain_pct: float | None = None
+    days_to_peak: int | None = None
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for serialization."""
+        return {
+            "ticker": self.ticker,
+            "scan_result_id": self.scan_result_id,
+            "score": self.score,
+            "criteria_results": self.criteria_results,
+            "drawdown": self.drawdown,
+            "days_since_high": self.days_since_high,
+            "range_position": self.range_position,
+            "pct_from_sma50": self.pct_from_sma50,
+            "pct_from_sma200": self.pct_from_sma200,
+            "vol_ratio": self.vol_ratio,
+            "market_cap_estimate": self.market_cap_estimate,
+            "sma_crossover": self.sma_crossover,
+            "gain_pct": self.gain_pct,
+            "days_to_peak": self.days_to_peak,
+        }

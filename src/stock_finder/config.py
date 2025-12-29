@@ -7,6 +7,13 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
+# Load .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, rely on environment variables
+
 
 class FMPConfig(BaseModel):
     """Configuration for FMP (Financial Modeling Prep) API."""

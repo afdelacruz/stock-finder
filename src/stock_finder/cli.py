@@ -458,6 +458,263 @@ def import_csv(
     console.print(f"[green]Database: {db.db_path} | Scan run ID: {scan_run_id}[/green]")
 
 
+# =============================================================================
+# Neumann Scoring Commands
+# =============================================================================
+
+
+@cli.group()
+def neumann() -> None:
+    """Neumann scoring commands - score stocks against Neumann's criteria."""
+    pass
+
+
+@neumann.command()
+@click.option(
+    "--scan-run-id",
+    type=int,
+    required=True,
+    help="Scan run ID to score",
+)
+@click.option(
+    "--db-path",
+    type=click.Path(),
+    default=None,
+    help="Path to database file (default: data/stock_finder.db)",
+)
+@click.option(
+    "--provider",
+    type=click.Choice(["fmp", "yfinance"]),
+    default="fmp",
+    help="Data provider to use",
+)
+@click.option(
+    "--save/--no-save",
+    default=True,
+    help="Save results to database",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=None,
+    help="Limit number of stocks to score (for testing)",
+)
+@click.pass_context
+def score(
+    ctx: click.Context,
+    scan_run_id: int,
+    db_path: str | None,
+    provider: str,
+    save: bool,
+    limit: int | None,
+) -> None:
+    """Score stocks from a scan run against Neumann's criteria."""
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+
+    from stock_finder.scoring.scorer import NeumannScorer
+
+    settings = ctx.obj["settings"]
+    db = Database(db_path) if db_path else Database()
+
+    # Get scan run info
+    scan_run = db.get_scan_run(scan_run_id)
+    if not scan_run:
+        console.print(f"[red]Scan run #{scan_run_id} not found[/red]")
+        return
+
+    console.print(f"[cyan]Scoring scan run #{scan_run_id}[/cyan]")
+    console.print(f"  Results: {scan_run['results_count']}")
+    console.print(f"  Universe: {scan_run['universe']}")
+
+    # Create data provider
+    if provider == "fmp":
+        try:
+            data_provider = FMPProvider(settings.fmp)
+            console.print("[cyan]Using FMP data provider[/cyan]")
+        except ValueError as e:
+            console.print(f"[yellow]FMP unavailable ({e}), falling back to yfinance[/yellow]")
+            data_provider = YFinanceProvider(settings.data)
+    else:
+        data_provider = YFinanceProvider(settings.data)
+        console.print("[cyan]Using yfinance data provider[/cyan]")
+
+    # Create scorer
+    scorer = NeumannScorer(provider=data_provider, db=db)
+
+    # Get results to score
+    scan_results = db.get_results(scan_run_id=scan_run_id)
+    if limit:
+        scan_results = scan_results[:limit]
+        console.print(f"[yellow]Limited to first {limit} stocks[/yellow]")
+
+    # Score with progress bar
+    scores = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Scoring stocks...", total=len(scan_results))
+
+        for result in scan_results:
+            try:
+                score_result = scorer.score_stock(result)
+                scores.append(score_result)
+
+                if save:
+                    db.add_neumann_score(score_result)
+
+                progress.update(
+                    task,
+                    advance=1,
+                    description=f"Scoring {result['ticker']}... (score: {score_result.score})",
+                )
+            except Exception as e:
+                console.print(f"[red]Error scoring {result['ticker']}: {e}[/red]")
+                progress.update(task, advance=1)
+
+    # Show summary
+    if scores:
+        avg_score = sum(s.score for s in scores) / len(scores)
+        console.print()
+        console.print(f"[green]Scoring complete![/green]")
+        console.print(f"  Scored: {len(scores)} stocks")
+        console.print(f"  Average score: {avg_score:.2f} / 8")
+
+        # Score distribution
+        from collections import Counter
+        dist = Counter(s.score for s in scores)
+        console.print("  Distribution:")
+        for score_val in sorted(dist.keys(), reverse=True):
+            console.print(f"    Score {score_val}: {dist[score_val]} stocks")
+
+
+@neumann.command()
+@click.option(
+    "--db-path",
+    type=click.Path(),
+    default=None,
+    help="Path to database file",
+)
+def report(db_path: str | None) -> None:
+    """Generate a report of Neumann scoring results."""
+    from stock_finder.scoring.report import generate_report, print_report
+
+    db = Database(db_path) if db_path else Database()
+
+    # Check if we have any scores
+    scores = db.get_neumann_scores(limit=1)
+    if not scores:
+        console.print("[yellow]No Neumann scores found. Run 'stock-finder neumann score' first.[/yellow]")
+        return
+
+    report_data = generate_report(db)
+    print_report(report_data, console)
+
+
+@neumann.command("results")
+@click.option(
+    "--db-path",
+    type=click.Path(),
+    default=None,
+    help="Path to database file",
+)
+@click.option(
+    "--min-score",
+    type=int,
+    default=None,
+    help="Filter by minimum score",
+)
+@click.option(
+    "--top",
+    type=int,
+    default=50,
+    help="Number of results to show",
+)
+@click.option(
+    "--output",
+    "output_format",
+    type=click.Choice(["table", "csv", "json"]),
+    default="table",
+    help="Output format",
+)
+def neumann_results(
+    db_path: str | None,
+    min_score: int | None,
+    top: int,
+    output_format: str,
+) -> None:
+    """View Neumann scoring results."""
+    from rich.table import Table
+    import json as json_module
+
+    db = Database(db_path) if db_path else Database()
+
+    scores = db.get_neumann_scores(min_score=min_score, limit=top)
+
+    if not scores:
+        console.print("[yellow]No scores found[/yellow]")
+        return
+
+    if output_format == "json":
+        # Remove criteria_json (it's duplicated in criteria_results)
+        for s in scores:
+            s.pop("criteria_json", None)
+        click.echo(json_module.dumps(scores, indent=2, default=str))
+        return
+
+    if output_format == "csv":
+        import csv
+        import sys
+        writer = csv.writer(sys.stdout)
+        writer.writerow(["ticker", "score", "gain_pct", "days_to_peak", "drawdown", "market_cap"])
+        for s in scores:
+            writer.writerow([
+                s["ticker"],
+                s["score"],
+                s.get("gain_pct", ""),
+                s.get("days_to_peak", ""),
+                s.get("drawdown", ""),
+                s.get("market_cap_estimate", ""),
+            ])
+        return
+
+    # Table format
+    table = Table(title=f"Neumann Scores (top {len(scores)})")
+    table.add_column("Ticker", style="cyan")
+    table.add_column("Score", justify="right", style="green")
+    table.add_column("Gain %", justify="right")
+    table.add_column("Days", justify="right")
+    table.add_column("Drawdown", justify="right")
+    table.add_column("Mkt Cap", justify="right")
+
+    for s in scores:
+        drawdown = s.get("drawdown")
+        drawdown_str = f"{drawdown*100:.0f}%" if drawdown else "-"
+
+        mkt_cap = s.get("market_cap_estimate")
+        if mkt_cap:
+            if mkt_cap >= 1_000_000_000:
+                mkt_cap_str = f"${mkt_cap/1_000_000_000:.1f}B"
+            else:
+                mkt_cap_str = f"${mkt_cap/1_000_000:.0f}M"
+        else:
+            mkt_cap_str = "-"
+
+        table.add_row(
+            s["ticker"],
+            str(s["score"]),
+            f"{s.get('gain_pct', 0):,.0f}%",
+            str(s.get("days_to_peak", "-")),
+            drawdown_str,
+            mkt_cap_str,
+        )
+
+    console.print(table)
+
+
 def main() -> None:
     """Entry point for the CLI."""
     cli()
