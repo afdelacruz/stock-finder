@@ -1,14 +1,20 @@
 """SQLite database for storing scan results."""
 
+from __future__ import annotations
+
 import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 import structlog
 
 from stock_finder.models.results import NeumannScore, ScanResult
+
+if TYPE_CHECKING:
+    from stock_finder.analysis.models import TrendlineAnalysis
 
 logger = structlog.get_logger()
 
@@ -95,6 +101,43 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_neumann_score ON neumann_scores(score DESC);
                 CREATE INDEX IF NOT EXISTS idx_neumann_ticker ON neumann_scores(ticker);
                 CREATE INDEX IF NOT EXISTS idx_neumann_scan_result ON neumann_scores(scan_result_id);
+
+                CREATE TABLE IF NOT EXISTS trendline_analysis (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scan_result_id INTEGER NOT NULL,
+                    ticker TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+
+                    -- Formation
+                    trendline_formed BOOLEAN NOT NULL,
+                    days_to_form INTEGER,
+                    swing_low_count INTEGER,
+
+                    -- Quality
+                    r_squared REAL,
+                    slope_pct_per_day REAL,
+
+                    -- Touches
+                    touch_count INTEGER,
+                    avg_bounce_pct REAL,
+                    max_deviation_pct REAL,
+
+                    -- Break
+                    break_date DATE,
+                    break_price REAL,
+
+                    -- From scan result
+                    gain_pct REAL,
+                    days_to_peak INTEGER,
+
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (scan_result_id) REFERENCES scan_results(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_trendline_ticker ON trendline_analysis(ticker);
+                CREATE INDEX IF NOT EXISTS idx_trendline_r_squared ON trendline_analysis(r_squared DESC);
+                CREATE INDEX IF NOT EXISTS idx_trendline_timeframe ON trendline_analysis(timeframe);
+                CREATE INDEX IF NOT EXISTS idx_trendline_scan_result ON trendline_analysis(scan_result_id);
             """)
         logger.info("Database initialized", path=str(self.db_path))
 
@@ -341,4 +384,177 @@ class Database:
         """Clear all Neumann scores. Returns number of rows deleted."""
         with self._get_connection() as conn:
             cursor = conn.execute("DELETE FROM neumann_scores")
+            return cursor.rowcount
+
+    # =========================================================================
+    # Trendline Analysis Methods
+    # =========================================================================
+
+    def add_trendline_analysis(self, analysis: "TrendlineAnalysis") -> int:
+        """
+        Add a trendline analysis to the database.
+
+        Args:
+            analysis: TrendlineAnalysis object to save
+
+        Returns:
+            The ID of the inserted record
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO trendline_analysis (
+                    scan_result_id, ticker, timeframe,
+                    trendline_formed, days_to_form, swing_low_count,
+                    r_squared, slope_pct_per_day,
+                    touch_count, avg_bounce_pct, max_deviation_pct,
+                    break_date, break_price,
+                    gain_pct, days_to_peak
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    analysis.scan_result_id,
+                    analysis.ticker,
+                    analysis.timeframe,
+                    analysis.trendline_formed,
+                    analysis.days_to_form,
+                    analysis.swing_low_count,
+                    analysis.r_squared,
+                    analysis.slope_pct_per_day,
+                    analysis.touch_count,
+                    analysis.avg_bounce_pct,
+                    analysis.max_deviation_pct,
+                    analysis.break_date,
+                    analysis.break_price,
+                    analysis.gain_pct,
+                    analysis.days_to_peak,
+                ),
+            )
+            return cursor.lastrowid
+
+    def get_trendline_analyses(
+        self,
+        min_r_squared: float | None = None,
+        timeframe: str | None = None,
+        formed_only: bool = False,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """
+        Get trendline analyses with optional filters.
+
+        Args:
+            min_r_squared: Minimum R² filter
+            timeframe: Filter by timeframe ('daily' or 'weekly')
+            formed_only: Only return stocks where trendline formed
+            limit: Maximum number of results
+
+        Returns:
+            List of analysis records as dictionaries
+        """
+        query = "SELECT * FROM trendline_analysis WHERE 1=1"
+        params = []
+
+        if min_r_squared is not None:
+            query += " AND r_squared >= ?"
+            params.append(min_r_squared)
+
+        if timeframe is not None:
+            query += " AND timeframe = ?"
+            params.append(timeframe)
+
+        if formed_only:
+            query += " AND trendline_formed = 1"
+
+        query += " ORDER BY r_squared DESC, gain_pct DESC"
+
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+
+        with self._get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_trendline_stats(self, timeframe: str | None = None) -> dict:
+        """Get aggregate statistics for trendline analyses."""
+        where_clause = ""
+        params = []
+        if timeframe:
+            where_clause = " WHERE timeframe = ?"
+            params = [timeframe]
+
+        with self._get_connection() as conn:
+            # Formation stats
+            formation = conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN trendline_formed = 1 THEN 1 ELSE 0 END) as formed,
+                    AVG(CASE WHEN trendline_formed = 1 THEN days_to_form END) as avg_days_to_form,
+                    AVG(CASE WHEN trendline_formed = 1 THEN swing_low_count END) as avg_swing_lows
+                FROM trendline_analysis{where_clause}
+                """,
+                params,
+            ).fetchone()
+
+            # Quality distribution
+            quality_dist = conn.execute(
+                f"""
+                SELECT
+                    CASE
+                        WHEN r_squared >= 0.9 THEN 'clean'
+                        WHEN r_squared >= 0.7 THEN 'moderate'
+                        ELSE 'messy'
+                    END as quality,
+                    COUNT(*) as count,
+                    AVG(gain_pct) as avg_gain
+                FROM trendline_analysis
+                WHERE trendline_formed = 1{' AND timeframe = ?' if timeframe else ''}
+                GROUP BY quality
+                ORDER BY
+                    CASE quality
+                        WHEN 'clean' THEN 1
+                        WHEN 'moderate' THEN 2
+                        ELSE 3
+                    END
+                """,
+                params,
+            ).fetchall()
+
+            # Touch stats
+            touch_stats = conn.execute(
+                f"""
+                SELECT
+                    AVG(touch_count) as avg_touches,
+                    AVG(avg_bounce_pct) as avg_bounce_pct
+                FROM trendline_analysis
+                WHERE trendline_formed = 1{' AND timeframe = ?' if timeframe else ''}
+                """,
+                params,
+            ).fetchone()
+
+            return {
+                "total": formation["total"] if formation else 0,
+                "formed": formation["formed"] if formation else 0,
+                "formed_pct": (formation["formed"] / formation["total"] * 100)
+                if formation and formation["total"] > 0
+                else 0,
+                "avg_days_to_form": formation["avg_days_to_form"] if formation else 0,
+                "avg_swing_lows": formation["avg_swing_lows"] if formation else 0,
+                "quality_distribution": [dict(row) for row in quality_dist],
+                "avg_touches": touch_stats["avg_touches"] if touch_stats else 0,
+                "avg_bounce_pct": touch_stats["avg_bounce_pct"] if touch_stats else 0,
+            }
+
+    def clear_trendline_analyses(self, timeframe: str | None = None) -> int:
+        """Clear trendline analyses. Returns number of rows deleted."""
+        with self._get_connection() as conn:
+            if timeframe:
+                cursor = conn.execute(
+                    "DELETE FROM trendline_analysis WHERE timeframe = ?",
+                    (timeframe,),
+                )
+            else:
+                cursor = conn.execute("DELETE FROM trendline_analysis")
             return cursor.rowcount

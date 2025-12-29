@@ -5,7 +5,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from stock_finder.config import DataConfig, ScanConfig
+from stock_finder.config import CacheConfig, DataConfig, ScanConfig
 from stock_finder.data.base import DataProvider
 from stock_finder.models.results import ScanResult, StockData
 
@@ -112,7 +112,7 @@ def scan_config() -> ScanConfig:
 @pytest.fixture
 def data_config() -> DataConfig:
     """Create a data config for testing."""
-    return DataConfig(cache_enabled=False, rate_limit_delay=0)
+    return DataConfig(cache=CacheConfig(enabled=False), rate_limit_delay=0)
 
 
 @pytest.fixture

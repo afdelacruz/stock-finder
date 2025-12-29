@@ -20,11 +20,56 @@ from stock_finder.data.nasdaq_ftp import (
 from stock_finder.data.yfinance_provider import YFinanceProvider
 from stock_finder.data.fmp_provider import FMPProvider
 from stock_finder.data.database import Database
+from stock_finder.data.cache import CacheManager
+from stock_finder.data.cached_provider import CachedDataProvider
 from stock_finder.output.formatters import format_as_csv, format_as_json, format_as_table, save_results
 from stock_finder.scanners.gainer_scanner import GainerScanner
 from stock_finder.utils.logging import setup_logging
 
 console = Console()
+
+
+def create_data_provider(settings, provider_choice: str | None, no_cache: bool = False):
+    """
+    Create a data provider with optional caching.
+
+    Args:
+        settings: Application settings
+        provider_choice: Provider to use ('fmp' or 'yfinance')
+        no_cache: If True, disable caching
+
+    Returns:
+        Tuple of (data_provider, provider_name)
+    """
+    provider_name = provider_choice or settings.default_provider
+
+    # Create base provider
+    if provider_name == "fmp":
+        try:
+            base_provider = FMPProvider(settings.fmp)
+            console.print("[cyan]Using FMP data provider[/cyan]")
+        except ValueError as e:
+            console.print(f"[yellow]FMP unavailable ({e}), falling back to yfinance[/yellow]")
+            base_provider = YFinanceProvider(settings.data)
+            provider_name = "yfinance"
+    else:
+        base_provider = YFinanceProvider(settings.data)
+        console.print("[cyan]Using yfinance data provider[/cyan]")
+
+    # Wrap with caching if enabled
+    cache_config = settings.data.cache
+    if cache_config.enabled and not no_cache:
+        cache_manager = CacheManager(cache_config)
+        data_provider = CachedDataProvider(base_provider, cache_manager)
+        console.print(f"[dim]Cache: enabled ({cache_config.cache_dir})[/dim]")
+    else:
+        data_provider = base_provider
+        if no_cache:
+            console.print("[dim]Cache: disabled (--no-cache)[/dim]")
+        else:
+            console.print("[dim]Cache: disabled[/dim]")
+
+    return data_provider, provider_name
 
 
 @click.group()
@@ -110,6 +155,11 @@ def cli(ctx: click.Context, verbose: bool, config: str | None) -> None:
     default=None,
     help="Data provider to use (default: fmp, falls back to yfinance if FMP unavailable)",
 )
+@click.option(
+    "--no-cache",
+    is_flag=True,
+    help="Bypass cache and fetch fresh data",
+)
 @click.pass_context
 def scan(
     ctx: click.Context,
@@ -124,6 +174,7 @@ def scan(
     use_db: bool,
     db_path: str | None,
     provider: str | None,
+    no_cache: bool,
 ) -> None:
     """Scan stocks for significant gains."""
     settings = ctx.obj["settings"]
@@ -167,18 +218,8 @@ def scan(
 
     console.print(f"Scanning {len(ticker_list)} tickers for {scan_config.min_gain_pct}%+ gains over {scan_config.lookback_years} years...")
 
-    # Create data provider (FMP by default, yfinance as fallback)
-    provider_choice = provider or settings.default_provider
-    if provider_choice == "fmp":
-        try:
-            data_provider = FMPProvider(settings.fmp)
-            console.print("[cyan]Using FMP data provider[/cyan]")
-        except ValueError as e:
-            console.print(f"[yellow]FMP unavailable ({e}), falling back to yfinance[/yellow]")
-            data_provider = YFinanceProvider(settings.data)
-    else:
-        data_provider = YFinanceProvider(settings.data)
-        console.print("[cyan]Using yfinance data provider[/cyan]")
+    # Create data provider with caching
+    data_provider, _ = create_data_provider(settings, provider, no_cache)
 
     scanner = GainerScanner(data_provider, scan_config)
 
@@ -243,8 +284,13 @@ def scan(
     default=None,
     help="Data provider to use",
 )
+@click.option(
+    "--no-cache",
+    is_flag=True,
+    help="Bypass cache and fetch fresh data",
+)
 @click.pass_context
-def check(ctx: click.Context, ticker: str, years: int, provider: str | None) -> None:
+def check(ctx: click.Context, ticker: str, years: int, provider: str | None, no_cache: bool) -> None:
     """Check a single ticker for gains."""
     settings = ctx.obj["settings"]
 
@@ -252,15 +298,8 @@ def check(ctx: click.Context, ticker: str, years: int, provider: str | None) -> 
     scan_config.lookback_years = years
     scan_config.min_gain_pct = 0  # Show any gain
 
-    # Create data provider
-    provider_choice = provider or settings.default_provider
-    if provider_choice == "fmp":
-        try:
-            data_provider = FMPProvider(settings.fmp)
-        except ValueError:
-            data_provider = YFinanceProvider(settings.data)
-    else:
-        data_provider = YFinanceProvider(settings.data)
+    # Create data provider with caching
+    data_provider, _ = create_data_provider(settings, provider, no_cache)
 
     scanner = GainerScanner(data_provider, scan_config)
 
@@ -499,6 +538,11 @@ def neumann() -> None:
     default=None,
     help="Limit number of stocks to score (for testing)",
 )
+@click.option(
+    "--no-cache",
+    is_flag=True,
+    help="Bypass cache and fetch fresh data",
+)
 @click.pass_context
 def score(
     ctx: click.Context,
@@ -507,6 +551,7 @@ def score(
     provider: str,
     save: bool,
     limit: int | None,
+    no_cache: bool,
 ) -> None:
     """Score stocks from a scan run against Neumann's criteria."""
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
@@ -526,17 +571,8 @@ def score(
     console.print(f"  Results: {scan_run['results_count']}")
     console.print(f"  Universe: {scan_run['universe']}")
 
-    # Create data provider
-    if provider == "fmp":
-        try:
-            data_provider = FMPProvider(settings.fmp)
-            console.print("[cyan]Using FMP data provider[/cyan]")
-        except ValueError as e:
-            console.print(f"[yellow]FMP unavailable ({e}), falling back to yfinance[/yellow]")
-            data_provider = YFinanceProvider(settings.data)
-    else:
-        data_provider = YFinanceProvider(settings.data)
-        console.print("[cyan]Using yfinance data provider[/cyan]")
+    # Create data provider with caching
+    data_provider, _ = create_data_provider(settings, provider, no_cache)
 
     # Create scorer
     scorer = NeumannScorer(provider=data_provider, db=db)
@@ -713,6 +749,416 @@ def neumann_results(
         )
 
     console.print(table)
+
+
+# =============================================================================
+# Trendline Analysis Commands
+# =============================================================================
+
+
+@cli.group()
+def trendline() -> None:
+    """Trendline analysis commands - analyze post-ignition price structure."""
+    pass
+
+
+@trendline.command()
+@click.option(
+    "--scan-run-id",
+    type=int,
+    required=True,
+    help="Scan run ID to analyze",
+)
+@click.option(
+    "--db-path",
+    type=click.Path(),
+    default=None,
+    help="Path to database file (default: data/stock_finder.db)",
+)
+@click.option(
+    "--provider",
+    type=click.Choice(["fmp", "yfinance"]),
+    default="fmp",
+    help="Data provider to use",
+)
+@click.option(
+    "--timeframe",
+    type=click.Choice(["daily", "weekly", "both"]),
+    default="daily",
+    help="Timeframe for analysis",
+)
+@click.option(
+    "--save/--no-save",
+    default=True,
+    help="Save results to database",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=None,
+    help="Limit number of stocks to analyze (for testing)",
+)
+@click.option(
+    "--no-cache",
+    is_flag=True,
+    help="Bypass cache and fetch fresh data",
+)
+@click.pass_context
+def analyze(
+    ctx: click.Context,
+    scan_run_id: int,
+    db_path: str | None,
+    provider: str,
+    timeframe: str,
+    save: bool,
+    limit: int | None,
+    no_cache: bool,
+) -> None:
+    """Analyze trendlines for stocks from a scan run."""
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+
+    from stock_finder.analysis.analyzer import TrendlineAnalyzer
+    from stock_finder.analysis.models import TrendlineConfig
+
+    settings = ctx.obj["settings"]
+    db = Database(db_path) if db_path else Database()
+
+    # Get scan run info
+    scan_run = db.get_scan_run(scan_run_id)
+    if not scan_run:
+        console.print(f"[red]Scan run #{scan_run_id} not found[/red]")
+        return
+
+    console.print(f"[cyan]Analyzing trendlines for scan run #{scan_run_id}[/cyan]")
+    console.print(f"  Results: {scan_run['results_count']}")
+    console.print(f"  Timeframe: {timeframe}")
+
+    # Create data provider with caching
+    data_provider, _ = create_data_provider(settings, provider, no_cache)
+
+    # Create analyzer
+    config = TrendlineConfig()
+    analyzer = TrendlineAnalyzer(provider=data_provider, db=db, config=config)
+
+    # Get results to analyze
+    scan_results = db.get_results(scan_run_id=scan_run_id)
+    if limit:
+        scan_results = scan_results[:limit]
+        console.print(f"[yellow]Limited to first {limit} stocks[/yellow]")
+
+    # Analyze with progress bar
+    analyses = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Analyzing trendlines...", total=len(scan_results))
+
+        for result in scan_results:
+            try:
+                if timeframe == "both":
+                    daily = analyzer.analyze_stock(result, "daily", save=save)
+                    weekly = analyzer.analyze_stock(result, "weekly", save=save)
+                    analyses.extend([daily, weekly])
+                else:
+                    analysis = analyzer.analyze_stock(result, timeframe, save=save)
+                    analyses.append(analysis)
+
+                progress.update(
+                    task,
+                    advance=1,
+                    description=f"Analyzing {result['ticker']}...",
+                )
+            except Exception as e:
+                console.print(f"[red]Error analyzing {result['ticker']}: {e}[/red]")
+                progress.update(task, advance=1)
+
+    # Show summary
+    formed = sum(1 for a in analyses if a.trendline_formed)
+    console.print()
+    console.print(f"[green]Analysis complete![/green]")
+    console.print(f"  Analyzed: {len(scan_results)} stocks")
+    console.print(f"  Trendlines formed: {formed} ({formed/len(analyses)*100:.1f}%)" if analyses else "")
+
+
+@trendline.command()
+@click.option(
+    "--db-path",
+    type=click.Path(),
+    default=None,
+    help="Path to database file",
+)
+@click.option(
+    "--timeframe",
+    type=click.Choice(["daily", "weekly"]),
+    default=None,
+    help="Filter by timeframe",
+)
+def report(db_path: str | None, timeframe: str | None) -> None:
+    """Generate a report of trendline analysis results."""
+    from rich.table import Table
+
+    db = Database(db_path) if db_path else Database()
+
+    stats = db.get_trendline_stats(timeframe=timeframe)
+
+    if stats["total"] == 0:
+        console.print("[yellow]No trendline analyses found. Run 'stock-finder trendline analyze' first.[/yellow]")
+        return
+
+    console.print()
+    console.print("[bold]Trendline Analysis Report[/bold]")
+    console.print("=" * 50)
+
+    # Formation stats
+    console.print()
+    console.print("[bold cyan]Formation Statistics:[/bold cyan]")
+    console.print(f"  Total analyzed: {stats['total']}")
+    console.print(f"  Trendlines formed: {stats['formed']} ({stats['formed_pct']:.1f}%)")
+    if stats['avg_days_to_form']:
+        console.print(f"  Avg days to form: {stats['avg_days_to_form']:.0f}")
+    if stats['avg_swing_lows']:
+        console.print(f"  Avg swing lows: {stats['avg_swing_lows']:.1f}")
+
+    # Quality distribution
+    if stats["quality_distribution"]:
+        console.print()
+        console.print("[bold cyan]Quality Distribution (R²):[/bold cyan]")
+        table = Table(show_header=True)
+        table.add_column("Quality")
+        table.add_column("Count", justify="right")
+        table.add_column("Avg Gain %", justify="right")
+
+        for q in stats["quality_distribution"]:
+            table.add_row(
+                q["quality"].capitalize(),
+                str(q["count"]),
+                f"{q['avg_gain']:,.0f}%" if q['avg_gain'] else "-",
+            )
+        console.print(table)
+
+    # Touch stats
+    console.print()
+    console.print("[bold cyan]Touch Statistics:[/bold cyan]")
+    if stats['avg_touches']:
+        console.print(f"  Avg touches per stock: {stats['avg_touches']:.1f}")
+    if stats['avg_bounce_pct']:
+        console.print(f"  Avg bounce from trendline: {stats['avg_bounce_pct']:.2f}%")
+
+
+@trendline.command("results")
+@click.option(
+    "--db-path",
+    type=click.Path(),
+    default=None,
+    help="Path to database file",
+)
+@click.option(
+    "--min-r-squared",
+    type=float,
+    default=None,
+    help="Filter by minimum R² value",
+)
+@click.option(
+    "--timeframe",
+    type=click.Choice(["daily", "weekly"]),
+    default=None,
+    help="Filter by timeframe",
+)
+@click.option(
+    "--formed-only",
+    is_flag=True,
+    help="Only show stocks where trendline formed",
+)
+@click.option(
+    "--top",
+    type=int,
+    default=50,
+    help="Number of results to show",
+)
+@click.option(
+    "--output",
+    "output_format",
+    type=click.Choice(["table", "csv", "json"]),
+    default="table",
+    help="Output format",
+)
+def trendline_results(
+    db_path: str | None,
+    min_r_squared: float | None,
+    timeframe: str | None,
+    formed_only: bool,
+    top: int,
+    output_format: str,
+) -> None:
+    """View trendline analysis results."""
+    from rich.table import Table
+    import json as json_module
+
+    db = Database(db_path) if db_path else Database()
+
+    results = db.get_trendline_analyses(
+        min_r_squared=min_r_squared,
+        timeframe=timeframe,
+        formed_only=formed_only,
+        limit=top,
+    )
+
+    if not results:
+        console.print("[yellow]No trendline analyses found[/yellow]")
+        return
+
+    if output_format == "json":
+        click.echo(json_module.dumps(results, indent=2, default=str))
+        return
+
+    if output_format == "csv":
+        import csv
+        import sys
+        writer = csv.writer(sys.stdout)
+        writer.writerow([
+            "ticker", "timeframe", "formed", "r_squared", "slope_pct",
+            "touches", "gain_pct", "days_to_peak"
+        ])
+        for r in results:
+            writer.writerow([
+                r["ticker"],
+                r["timeframe"],
+                r["trendline_formed"],
+                f"{r['r_squared']:.3f}" if r['r_squared'] else "",
+                f"{r['slope_pct_per_day']:.3f}" if r['slope_pct_per_day'] else "",
+                r.get("touch_count", ""),
+                r.get("gain_pct", ""),
+                r.get("days_to_peak", ""),
+            ])
+        return
+
+    # Table format
+    table = Table(title=f"Trendline Analysis (top {len(results)})")
+    table.add_column("Ticker", style="cyan")
+    table.add_column("TF")
+    table.add_column("Formed")
+    table.add_column("R²", justify="right")
+    table.add_column("Slope %/day", justify="right")
+    table.add_column("Touches", justify="right")
+    table.add_column("Gain %", justify="right")
+
+    for r in results:
+        formed = "[green]✓[/green]" if r["trendline_formed"] else "[red]✗[/red]"
+        r_sq = f"{r['r_squared']:.3f}" if r['r_squared'] else "-"
+        slope = f"{r['slope_pct_per_day']:.3f}" if r['slope_pct_per_day'] else "-"
+
+        table.add_row(
+            r["ticker"],
+            r["timeframe"][:1].upper(),  # D or W
+            formed,
+            r_sq,
+            slope,
+            str(r.get("touch_count", "-")),
+            f"{r.get('gain_pct', 0):,.0f}%",
+        )
+
+    console.print(table)
+
+
+# =============================================================================
+# Cache Management Commands
+# =============================================================================
+
+
+@cli.group()
+def cache() -> None:
+    """Cache management commands - view stats and clear cached data."""
+    pass
+
+
+@cache.command()
+@click.pass_context
+def stats(ctx: click.Context) -> None:
+    """Show cache statistics."""
+    from rich.table import Table
+
+    settings = ctx.obj["settings"]
+    cache_config = settings.data.cache
+
+    if not cache_config.enabled:
+        console.print("[yellow]Cache is disabled in configuration[/yellow]")
+        return
+
+    cache_manager = CacheManager(cache_config)
+    cache_stats = cache_manager.get_stats()
+
+    console.print()
+    console.print("[bold]Cache Statistics[/bold]")
+    console.print("=" * 40)
+
+    table = Table(show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value")
+
+    table.add_row("Status", "[green]Enabled[/green]" if cache_stats["enabled"] else "[red]Disabled[/red]")
+    table.add_row("Cache Directory", cache_stats.get("cache_dir", cache_config.cache_dir))
+    table.add_row("Entries", str(cache_stats["entry_count"]))
+    table.add_row("Total Size", f"{cache_stats['total_size_mb']:.2f} MB")
+    table.add_row("Max Size", f"{cache_config.max_size_gb:.1f} GB")
+    table.add_row("TTL (recent data)", f"{cache_config.ttl_hours} hours")
+
+    if cache_stats.get("oldest_entry"):
+        table.add_row("Oldest Entry", str(cache_stats["oldest_entry"]))
+    if cache_stats.get("newest_entry"):
+        table.add_row("Newest Entry", str(cache_stats["newest_entry"]))
+
+    console.print(table)
+
+
+@cache.command()
+@click.option(
+    "--ticker",
+    type=str,
+    default=None,
+    help="Clear cache for specific ticker only",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip confirmation prompt",
+)
+@click.pass_context
+def clear(ctx: click.Context, ticker: str | None, force: bool) -> None:
+    """Clear cached data."""
+    settings = ctx.obj["settings"]
+    cache_config = settings.data.cache
+
+    if not cache_config.enabled:
+        console.print("[yellow]Cache is disabled in configuration[/yellow]")
+        return
+
+    cache_manager = CacheManager(cache_config)
+
+    # Get current stats
+    current_stats = cache_manager.get_stats()
+    if current_stats["entry_count"] == 0:
+        console.print("[yellow]Cache is already empty[/yellow]")
+        return
+
+    # Confirm if not forced
+    if not force:
+        if ticker:
+            msg = f"Clear cache entries for {ticker.upper()}?"
+        else:
+            msg = f"Clear all {current_stats['entry_count']} cache entries ({current_stats['total_size_mb']:.2f} MB)?"
+
+        if not click.confirm(msg):
+            console.print("[yellow]Cancelled[/yellow]")
+            return
+
+    # Clear the cache
+    cleared = cache_manager.clear(ticker=ticker.upper() if ticker else None)
+
+    console.print(f"[green]Cleared {cleared} cache entries[/green]")
 
 
 def main() -> None:
