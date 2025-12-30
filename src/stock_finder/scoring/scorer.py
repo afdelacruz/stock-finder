@@ -18,6 +18,7 @@ from stock_finder.scoring.criteria.market_cap import MarketCapCriterion
 from stock_finder.scoring.criteria.near_lows import NearLowsCriterion
 from stock_finder.scoring.criteria.trendline_break import TrendlineBreakCriterion
 from stock_finder.scoring.criteria.volume_exhaustion import VolumeExhaustionCriterion
+from stock_finder.scoring.modes import ScoringMode, get_weight, get_max_score
 from stock_finder.utils.parallel import ParallelExecutor
 
 logger = structlog.get_logger()
@@ -38,6 +39,7 @@ class NeumannScorer:
         criteria: list[Criterion] | None = None,
         db: Database | None = None,
         parallel_config: ParallelConfig | None = None,
+        scoring_mode: ScoringMode = ScoringMode.FULL,
     ):
         """
         Initialize the scorer.
@@ -48,11 +50,13 @@ class NeumannScorer:
             criteria: List of criteria to evaluate. If None, uses default 8 criteria.
             db: Database for saving scores. If None, scores are not persisted.
             parallel_config: Configuration for parallel processing.
+            scoring_mode: Scoring mode to use (full, core, or weighted).
         """
         self.provider = provider
         self.criteria = criteria if criteria is not None else self._default_criteria()
         self.db = db
         self.parallel_config = parallel_config or ParallelConfig()
+        self.scoring_mode = scoring_mode
 
     def _default_criteria(self) -> list[Criterion]:
         """Return the standard 8 Neumann criteria with default thresholds."""
@@ -107,13 +111,16 @@ class NeumannScorer:
             result = criterion.evaluate(context)
             results[criterion.name] = result.to_dict()
             if result.passed:
-                total_score += 1
+                weight = get_weight(criterion.name, self.scoring_mode)
+                total_score += weight
 
         # Extract individual metrics for storage
         return NeumannScore(
             ticker=ticker,
             scan_result_id=scan_result_id,
             score=total_score,
+            max_score=get_max_score(self.scoring_mode),
+            scoring_mode=self.scoring_mode.value,
             criteria_results=results,
             drawdown=self._get_value(results, "drawdown"),
             days_since_high=self._get_value_int(results, "extended_decline"),
@@ -154,6 +161,8 @@ class NeumannScorer:
             "Scoring scan run",
             scan_run_id=scan_run_id,
             total_stocks=len(scan_results),
+            scoring_mode=self.scoring_mode.value,
+            max_score=get_max_score(self.scoring_mode),
             parallel=self.parallel_config.enabled,
             workers=self.parallel_config.max_workers if self.parallel_config.enabled else 1,
         )
@@ -163,10 +172,13 @@ class NeumannScorer:
         else:
             scores = self._score_sequential(scan_results, save, on_progress)
 
+        max_score = get_max_score(self.scoring_mode)
+        avg = sum(s.score for s in scores) / len(scores) if scores else 0
         logger.info(
             "Scoring complete",
             scored=len(scores),
-            avg_score=sum(s.score for s in scores) / len(scores) if scores else 0,
+            avg_score=f"{avg:.2f} / {max_score}",
+            scoring_mode=self.scoring_mode.value,
         )
 
         return scores
