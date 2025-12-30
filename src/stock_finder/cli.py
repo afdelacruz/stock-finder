@@ -567,6 +567,12 @@ def neumann() -> None:
     default=None,
     help="Number of parallel workers (default: 10, use 1 for sequential)",
 )
+@click.option(
+    "--scoring-mode",
+    type=click.Choice(["full", "core", "weighted"]),
+    default="full",
+    help="Scoring mode: full (8 criteria), core (top 2), weighted (by predictive value)",
+)
 @click.pass_context
 def score(
     ctx: click.Context,
@@ -577,11 +583,13 @@ def score(
     limit: int | None,
     no_cache: bool,
     workers: int | None,
+    scoring_mode: str,
 ) -> None:
     """Score stocks from a scan run against Neumann's criteria."""
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
     from stock_finder.scoring.scorer import NeumannScorer
+    from stock_finder.scoring.modes import ScoringMode, get_max_score
 
     settings = ctx.obj["settings"]
     db = Database(db_path) if db_path else Database()
@@ -610,8 +618,18 @@ def score(
     else:
         console.print("[dim]Parallel: disabled (sequential)[/dim]")
 
+    # Parse scoring mode
+    mode = ScoringMode(scoring_mode)
+    max_score = get_max_score(mode)
+    console.print(f"[dim]Scoring mode: {mode.value} (max score: {max_score})[/dim]")
+
     # Create scorer
-    scorer = NeumannScorer(provider=data_provider, db=db, parallel_config=parallel_config)
+    scorer = NeumannScorer(
+        provider=data_provider,
+        db=db,
+        parallel_config=parallel_config,
+        scoring_mode=mode,
+    )
 
     # Get results to score
     scan_results = db.get_results(scan_run_id=scan_run_id)
@@ -641,7 +659,7 @@ def score(
                 progress.update(
                     task,
                     advance=1,
-                    description=f"Scoring {result['ticker']}... (score: {score_result.score})",
+                    description=f"Scoring {result['ticker']}... (score: {score_result.score}/{max_score})",
                 )
             except Exception as e:
                 console.print(f"[red]Error scoring {result['ticker']}: {e}[/red]")
@@ -653,7 +671,8 @@ def score(
         console.print()
         console.print(f"[green]Scoring complete![/green]")
         console.print(f"  Scored: {len(scores)} stocks")
-        console.print(f"  Average score: {avg_score:.2f} / 8")
+        console.print(f"  Average score: {avg_score:.2f} / {max_score}")
+        console.print(f"  Scoring mode: {mode.value}")
 
         # Score distribution
         from collections import Counter

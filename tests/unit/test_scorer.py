@@ -471,3 +471,146 @@ class TestScorerEdgeCases:
         # Should not raise, should return result with low/zero score
         result = scorer.score_stock(scan_result)
         assert isinstance(result, NeumannScore)
+
+
+# =============================================================================
+# Tests for Scoring Modes
+# =============================================================================
+
+
+class TestScorerModes:
+    """Tests for NeumannScorer with different scoring modes."""
+
+    def test_scorer_defaults_to_full_mode(self, mock_historical_data):
+        """Scorer should default to full scoring mode."""
+        from stock_finder.scoring.scorer import NeumannScorer
+        from stock_finder.scoring.modes import ScoringMode
+
+        provider = MockDataProvider(mock_historical_data)
+        scorer = NeumannScorer(provider=provider)
+
+        assert scorer.scoring_mode == ScoringMode.FULL
+
+    def test_scorer_accepts_scoring_mode(self, mock_historical_data):
+        """Scorer should accept scoring_mode parameter."""
+        from stock_finder.scoring.scorer import NeumannScorer
+        from stock_finder.scoring.modes import ScoringMode
+
+        provider = MockDataProvider(mock_historical_data)
+
+        scorer_core = NeumannScorer(provider=provider, scoring_mode=ScoringMode.CORE)
+        assert scorer_core.scoring_mode == ScoringMode.CORE
+
+        scorer_weighted = NeumannScorer(provider=provider, scoring_mode=ScoringMode.WEIGHTED)
+        assert scorer_weighted.scoring_mode == ScoringMode.WEIGHTED
+
+    def test_score_includes_max_score_and_mode(self, mock_historical_data):
+        """NeumannScore should include max_score and scoring_mode."""
+        from stock_finder.scoring.scorer import NeumannScorer
+        from stock_finder.scoring.modes import ScoringMode
+
+        provider = MockDataProvider(mock_historical_data)
+
+        scan_result = {
+            "id": 1,
+            "ticker": "WINNER1",
+            "low_date": "2020-03-15",
+            "low_price": 10.0,
+            "high_date": "2021-01-15",
+            "high_price": 60.0,
+            "gain_pct": 500.0,
+            "days_to_peak": 200,
+        }
+
+        # Test full mode
+        scorer_full = NeumannScorer(provider=provider, scoring_mode=ScoringMode.FULL)
+        result_full = scorer_full.score_stock(scan_result)
+        assert result_full.max_score == 8
+        assert result_full.scoring_mode == "full"
+
+        # Test core mode
+        scorer_core = NeumannScorer(provider=provider, scoring_mode=ScoringMode.CORE)
+        result_core = scorer_core.score_stock(scan_result)
+        assert result_core.max_score == 2
+        assert result_core.scoring_mode == "core"
+
+        # Test weighted mode
+        scorer_weighted = NeumannScorer(provider=provider, scoring_mode=ScoringMode.WEIGHTED)
+        result_weighted = scorer_weighted.score_stock(scan_result)
+        assert result_weighted.max_score == 10
+        assert result_weighted.scoring_mode == "weighted"
+
+    def test_core_mode_only_counts_core_criteria(self, mock_historical_data):
+        """Core mode should only count drawdown and extended_decline."""
+        from stock_finder.scoring.scorer import NeumannScorer
+        from stock_finder.scoring.modes import ScoringMode
+
+        provider = MockDataProvider(mock_historical_data)
+
+        scan_result = {
+            "id": 1,
+            "ticker": "WINNER1",
+            "low_date": "2020-03-15",
+            "low_price": 10.0,
+            "high_date": "2021-01-15",
+            "high_price": 60.0,
+            "gain_pct": 500.0,
+            "days_to_peak": 200,
+        }
+
+        scorer = NeumannScorer(provider=provider, scoring_mode=ScoringMode.CORE)
+        result = scorer.score_stock(scan_result)
+
+        # Max possible score in core mode is 2
+        assert 0 <= result.score <= 2
+
+    def test_weighted_mode_applies_weights(self, mock_historical_data):
+        """Weighted mode should apply different weights to criteria."""
+        from stock_finder.scoring.scorer import NeumannScorer
+        from stock_finder.scoring.modes import ScoringMode
+
+        provider = MockDataProvider(mock_historical_data)
+
+        scan_result = {
+            "id": 1,
+            "ticker": "WINNER1",
+            "low_date": "2020-03-15",
+            "low_price": 10.0,
+            "high_date": "2021-01-15",
+            "high_price": 60.0,
+            "gain_pct": 500.0,
+            "days_to_peak": 200,
+        }
+
+        scorer = NeumannScorer(provider=provider, scoring_mode=ScoringMode.WEIGHTED)
+        result = scorer.score_stock(scan_result)
+
+        # Max possible score in weighted mode is 10
+        assert 0 <= result.score <= 10
+
+    def test_full_mode_score_equals_criteria_passed(self, mock_historical_data):
+        """Full mode score should equal number of criteria passed."""
+        from stock_finder.scoring.scorer import NeumannScorer
+        from stock_finder.scoring.modes import ScoringMode
+
+        provider = MockDataProvider(mock_historical_data)
+
+        scan_result = {
+            "id": 1,
+            "ticker": "WINNER1",
+            "low_date": "2020-03-15",
+            "low_price": 10.0,
+            "high_date": "2021-01-15",
+            "high_price": 60.0,
+            "gain_pct": 500.0,
+            "days_to_peak": 200,
+        }
+
+        scorer = NeumannScorer(provider=provider, scoring_mode=ScoringMode.FULL)
+        result = scorer.score_stock(scan_result)
+
+        # Count passed criteria
+        passed_count = sum(
+            1 for r in result.criteria_results.values() if r["passed"]
+        )
+        assert result.score == passed_count

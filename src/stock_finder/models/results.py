@@ -79,7 +79,9 @@ class NeumannScore:
     Attributes:
         ticker: Stock ticker symbol
         scan_result_id: ID of the source scan_result record
-        score: Total score (0-8, number of criteria passed)
+        score: Total score (weighted or unweighted based on scoring_mode)
+        max_score: Maximum possible score for the scoring mode used
+        scoring_mode: Scoring mode used (full, core, or weighted)
         criteria_results: Dict mapping criterion name to pass/fail and value
         drawdown: Drawdown from 2-year high at ignition
         days_since_high: Trading days from 2-year high to ignition
@@ -95,6 +97,8 @@ class NeumannScore:
     scan_result_id: int
     score: int
     criteria_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    max_score: int = 8  # Default for backward compatibility
+    scoring_mode: str = "full"  # Default for backward compatibility
     drawdown: float | None = None
     days_since_high: int | None = None
     range_position: float | None = None
@@ -113,6 +117,8 @@ class NeumannScore:
             "ticker": self.ticker,
             "scan_result_id": self.scan_result_id,
             "score": self.score,
+            "max_score": self.max_score,
+            "scoring_mode": self.scoring_mode,
             "criteria_results": self.criteria_results,
             "drawdown": self.drawdown,
             "days_since_high": self.days_since_high,
