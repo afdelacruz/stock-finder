@@ -1234,6 +1234,471 @@ def clear(ctx: click.Context, ticker: str | None, force: bool) -> None:
     console.print(f"[green]Cleared {cleared} cache entries[/green]")
 
 
+# =============================================================================
+# Research Commands
+# =============================================================================
+
+
+@cli.group()
+def research() -> None:
+    """Research and analysis commands - run analyses and track findings."""
+    pass
+
+
+@research.command("run")
+@click.option(
+    "--analysis",
+    type=str,
+    default=None,
+    help="Run single analysis (summary, criteria_lift, setup_quality, theme_performance, etc.)",
+)
+@click.option(
+    "--run-id",
+    type=str,
+    default=None,
+    help="Custom run ID (auto-generated if not provided)",
+)
+@click.option(
+    "--max-gain",
+    type=float,
+    default=50000,
+    help="Exclude outliers above this gain %",
+)
+@click.option(
+    "--notes",
+    type=str,
+    default=None,
+    help="Notes for this research run",
+)
+@click.pass_context
+def research_run(
+    ctx: click.Context,
+    analysis: str | None,
+    run_id: str | None,
+    max_gain: float,
+    notes: str | None,
+) -> None:
+    """Run research analyses and store findings."""
+    from rich.table import Table
+    from stock_finder.research import ResearchRunner
+
+    runner = ResearchRunner()
+
+    if analysis:
+        # Run single analysis
+        console.print(f"[cyan]Running {analysis} analysis...[/cyan]")
+        try:
+            results = runner.run_single_analysis(analysis, run_id=run_id, max_gain=max_gain)
+            console.print(runner.format_results(results))
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            return
+    else:
+        # Run full analysis
+        console.print("[cyan]Running full analysis suite...[/cyan]")
+        result = runner.run_full_analysis(
+            run_id=run_id,
+            max_gain=max_gain,
+            notes=notes,
+        )
+        console.print(f"\n[green]Analysis complete![/green]")
+        console.print(f"Run ID: {result['run_id']}")
+        console.print(f"Findings stored: {result['findings_count']}")
+        console.print(f"Analyses run: {result['analyses_run']}")
+
+
+@research.command("show")
+@click.option(
+    "--run-id",
+    type=str,
+    default=None,
+    help="Show findings from specific run (latest if not provided)",
+)
+@click.option(
+    "--type",
+    "finding_type",
+    type=str,
+    default=None,
+    help="Filter by finding type",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"]),
+    default="table",
+    help="Output format",
+)
+@click.pass_context
+def research_show(
+    ctx: click.Context,
+    run_id: str | None,
+    finding_type: str | None,
+    output_format: str,
+) -> None:
+    """Show research findings."""
+    from rich.table import Table
+    import json
+    from stock_finder.data.database import Database
+
+    db = Database()
+
+    # Get run ID
+    if run_id is None:
+        runs = db.get_research_runs(limit=1)
+        if not runs:
+            console.print("[yellow]No research runs found[/yellow]")
+            return
+        run_id = runs[0]["id"]
+        console.print(f"[dim]Showing latest run: {run_id}[/dim]\n")
+
+    findings = db.get_findings(run_id=run_id, finding_type=finding_type)
+
+    if not findings:
+        console.print("[yellow]No findings found[/yellow]")
+        return
+
+    if output_format == "json":
+        console.print(json.dumps(findings, indent=2, default=str))
+    else:
+        # Group by finding_type
+        current_type = None
+        table = None
+
+        for f in findings:
+            if f["finding_type"] != current_type:
+                if table:
+                    console.print(table)
+                    console.print()
+
+                current_type = f["finding_type"]
+                console.print(f"[bold]{current_type.replace('_', ' ').title()}[/bold]")
+
+                table = Table()
+                table.add_column("Key")
+                table.add_column("Metric")
+                table.add_column("Value", justify="right")
+                table.add_column("N", justify="right")
+
+            table.add_row(
+                f["finding_key"],
+                f["metric_name"],
+                f"{f['metric_value']:,.1f}" if f["metric_value"] else "N/A",
+                str(f["sample_size"]) if f["sample_size"] else "-",
+            )
+
+        if table:
+            console.print(table)
+
+
+@research.command("compare")
+@click.argument("run_id_1")
+@click.argument("run_id_2")
+@click.option(
+    "--type",
+    "finding_type",
+    type=str,
+    default=None,
+    help="Filter by finding type",
+)
+@click.pass_context
+def research_compare(
+    ctx: click.Context,
+    run_id_1: str,
+    run_id_2: str,
+    finding_type: str | None,
+) -> None:
+    """Compare findings between two research runs."""
+    from rich.table import Table
+    from stock_finder.research import ResearchRunner
+
+    runner = ResearchRunner()
+    comparisons = runner.compare_runs(run_id_1, run_id_2, finding_type)
+
+    if not comparisons:
+        console.print("[yellow]No comparable findings found[/yellow]")
+        return
+
+    console.print(f"[bold]Comparing: {run_id_1} vs {run_id_2}[/bold]\n")
+
+    current_type = None
+    table = None
+
+    for row in comparisons:
+        if row["finding_type"] != current_type:
+            if table:
+                console.print(table)
+                console.print()
+
+            current_type = row["finding_type"]
+            console.print(f"[cyan]{current_type.replace('_', ' ').title()}[/cyan]")
+
+            table = Table()
+            table.add_column("Key")
+            table.add_column("Metric")
+            table.add_column("Run 1", justify="right")
+            table.add_column("Run 2", justify="right")
+            table.add_column("Change", justify="right")
+
+        change = row["pct_change"]
+        if change is not None:
+            if change > 0:
+                change_str = f"[green]+{change:.1f}%[/green]"
+            elif change < 0:
+                change_str = f"[red]{change:.1f}%[/red]"
+            else:
+                change_str = "0.0%"
+        else:
+            change_str = "-"
+
+        table.add_row(
+            row["finding_key"],
+            row["metric_name"],
+            f"{row['value_1']:,.1f}",
+            f"{row['value_2']:,.1f}",
+            change_str,
+        )
+
+    if table:
+        console.print(table)
+
+
+@research.command("runs")
+@click.option(
+    "--limit",
+    type=int,
+    default=10,
+    help="Maximum runs to show",
+)
+@click.pass_context
+def research_runs(ctx: click.Context, limit: int) -> None:
+    """List research runs."""
+    from rich.table import Table
+    from stock_finder.data.database import Database
+
+    db = Database()
+    runs = db.get_research_runs(limit=limit)
+
+    if not runs:
+        console.print("[yellow]No research runs found[/yellow]")
+        return
+
+    table = Table(title="Research Runs")
+    table.add_column("Run ID")
+    table.add_column("Type")
+    table.add_column("Created")
+    table.add_column("Notes")
+
+    for run in runs:
+        table.add_row(
+            run["id"],
+            run["run_type"],
+            run["created_at"][:19] if run["created_at"] else "-",
+            (run["notes"] or "-")[:40],
+        )
+
+    console.print(table)
+
+
+@research.command("themes")
+@click.option(
+    "--theme",
+    type=str,
+    default=None,
+    help="Filter by theme name",
+)
+@click.option(
+    "--ticker",
+    type=str,
+    default=None,
+    help="Show themes for specific ticker",
+)
+@click.pass_context
+def research_themes(ctx: click.Context, theme: str | None, ticker: str | None) -> None:
+    """Show theme mappings and performance."""
+    from rich.table import Table
+    from stock_finder.data.database import Database
+
+    db = Database()
+
+    if ticker:
+        # Show themes for specific ticker
+        themes = db.get_theme_for_ticker(ticker)
+        if not themes:
+            console.print(f"[yellow]No themes found for {ticker.upper()}[/yellow]")
+            return
+
+        console.print(f"[bold]Themes for {ticker.upper()}[/bold]\n")
+        for t in themes:
+            console.print(f"  • {t['theme']} Wave {t['wave']}")
+            if t.get("notes"):
+                console.print(f"    [dim]{t['notes']}[/dim]")
+    else:
+        # Show theme summary with performance
+        summary = db.get_theme_summary()
+        if not summary:
+            console.print("[yellow]No themes found. Run scripts/populate_themes.py first.[/yellow]")
+            return
+
+        table = Table(title="Theme Summary")
+        table.add_column("Theme")
+        table.add_column("Wave")
+        table.add_column("Stocks", justify="right")
+        table.add_column("Tickers")
+
+        for row in summary:
+            if theme and row["theme"].lower() != theme.lower():
+                continue
+            table.add_row(
+                row["theme"],
+                str(row["wave"]),
+                str(row["stock_count"]),
+                row["tickers"][:60] + ("..." if len(row["tickers"]) > 60 else ""),
+            )
+
+        console.print(table)
+
+
+@research.command("watchlist")
+@click.option(
+    "--add",
+    type=str,
+    default=None,
+    help="Add ticker to watchlist",
+)
+@click.option(
+    "--remove",
+    type=str,
+    default=None,
+    help="Remove ticker from watchlist",
+)
+@click.option(
+    "--theme",
+    type=str,
+    default=None,
+    help="Filter by theme or set theme when adding",
+)
+@click.option(
+    "--status",
+    type=click.Choice(["watching", "triggered", "entered", "exited", "removed"]),
+    default=None,
+    help="Filter by status or set status when updating",
+)
+@click.pass_context
+def research_watchlist(
+    ctx: click.Context,
+    add: str | None,
+    remove: str | None,
+    theme: str | None,
+    status: str | None,
+) -> None:
+    """Manage research watchlist."""
+    from rich.table import Table
+    from stock_finder.data.database import Database
+
+    db = Database()
+
+    if add:
+        # Add to watchlist
+        db.add_to_watchlist(ticker=add, theme=theme)
+        console.print(f"[green]Added {add.upper()} to watchlist[/green]")
+        return
+
+    if remove:
+        # Remove from watchlist
+        count = db.remove_from_watchlist(remove)
+        if count:
+            console.print(f"[green]Removed {remove.upper()} from watchlist[/green]")
+        else:
+            console.print(f"[yellow]{remove.upper()} not found in active watchlist[/yellow]")
+        return
+
+    # Show watchlist
+    items = db.get_watchlist(status=status or "watching", theme=theme)
+
+    if not items:
+        console.print("[yellow]Watchlist is empty[/yellow]")
+        return
+
+    table = Table(title="Watchlist")
+    table.add_column("Ticker")
+    table.add_column("Theme")
+    table.add_column("Score", justify="right")
+    table.add_column("Drawdown", justify="right")
+    table.add_column("Vol Ratio", justify="right")
+    table.add_column("Added")
+    table.add_column("Status")
+
+    for item in items:
+        drawdown = f"{item['drawdown']*100:.0f}%" if item["drawdown"] else "-"
+        vol_ratio = f"{item['vol_ratio']:.2f}x" if item["vol_ratio"] else "-"
+
+        table.add_row(
+            item["ticker"],
+            item["theme"] or "-",
+            str(item["setup_score"]) if item["setup_score"] else "-",
+            drawdown,
+            vol_ratio,
+            item["added_date"] or "-",
+            item["status"],
+        )
+
+    console.print(table)
+
+
+# =============================================================================
+# Dashboard Commands
+# =============================================================================
+
+
+@cli.group()
+def dashboard() -> None:
+    """Dashboard generation commands."""
+    pass
+
+
+@dashboard.command("generate")
+@click.option(
+    "--output",
+    type=str,
+    default="output/dashboard.html",
+    help="Output file path",
+)
+@click.option(
+    "--run-id",
+    type=str,
+    default=None,
+    help="Use specific research run (default: latest)",
+)
+@click.option(
+    "--open",
+    "open_browser",
+    is_flag=True,
+    help="Open in browser after generating",
+)
+@click.pass_context
+def dashboard_generate(
+    ctx: click.Context,
+    output: str,
+    run_id: str | None,
+    open_browser: bool,
+) -> None:
+    """Generate static HTML dashboard."""
+    import webbrowser
+    from stock_finder.dashboard import DashboardGenerator
+
+    console.print("[cyan]Generating dashboard...[/cyan]")
+
+    generator = DashboardGenerator()
+    output_path = generator.generate(output_path=output, run_id=run_id)
+
+    console.print(f"[green]Dashboard generated:[/green] {output_path}")
+    console.print(f"[dim]File size: {output_path.stat().st_size:,} bytes[/dim]")
+
+    if open_browser:
+        webbrowser.open(f"file://{output_path.absolute()}")
+        console.print("[dim]Opened in browser[/dim]")
+
+
 def main() -> None:
     """Entry point for the CLI."""
     cli()
