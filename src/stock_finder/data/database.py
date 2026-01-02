@@ -206,6 +206,46 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_watchlist_ticker ON watchlist(ticker);
                 CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist(status);
                 CREATE INDEX IF NOT EXISTS idx_watchlist_theme ON watchlist(theme);
+
+                -- Statistical analysis framework tables
+
+                CREATE TABLE IF NOT EXISTS analysis_runs (
+                    id TEXT PRIMARY KEY,
+                    start_date DATE NOT NULL,
+                    end_date DATE NOT NULL,
+                    min_gain_pct REAL NOT NULL,
+                    universe TEXT,
+                    winners_count INTEGER,
+                    total_count INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    parameters TEXT,
+                    notes TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_analysis_runs_dates ON analysis_runs(start_date, end_date);
+                CREATE INDEX IF NOT EXISTS idx_analysis_runs_created ON analysis_runs(created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS analysis_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    variable_name TEXT NOT NULL,
+                    population TEXT NOT NULL,
+                    mean REAL,
+                    median REAL,
+                    std_dev REAL,
+                    min_val REAL,
+                    max_val REAL,
+                    p10 REAL,
+                    p25 REAL,
+                    p75 REAL,
+                    p90 REAL,
+                    sample_size INTEGER,
+                    FOREIGN KEY (run_id) REFERENCES analysis_runs(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_analysis_results_run ON analysis_results(run_id);
+                CREATE INDEX IF NOT EXISTS idx_analysis_results_variable ON analysis_results(variable_name);
+                CREATE INDEX IF NOT EXISTS idx_analysis_results_population ON analysis_results(population);
             """)
         logger.info("Database initialized", path=str(self.db_path))
 
@@ -1181,4 +1221,320 @@ class Database:
                 )
             else:
                 cursor = conn.execute("DELETE FROM watchlist")
+            return cursor.rowcount
+
+    # =========================================================================
+    # Statistical Analysis Methods
+    # =========================================================================
+
+    def create_analysis_run(
+        self,
+        run_id: str,
+        start_date: str,
+        end_date: str,
+        min_gain_pct: float,
+        universe: str | None = None,
+        winners_count: int | None = None,
+        total_count: int | None = None,
+        parameters: dict | None = None,
+        notes: str | None = None,
+    ) -> str:
+        """
+        Create a new statistical analysis run.
+
+        Args:
+            run_id: Unique identifier (e.g., 'analysis_2018_2022')
+            start_date: Start of analysis period
+            end_date: End of analysis period
+            min_gain_pct: Minimum gain to qualify as a winner
+            universe: Ticker universe used ('all', 'nasdaq', etc.)
+            winners_count: Number of winners found
+            total_count: Total stocks analyzed
+            parameters: Additional parameters as dict
+            notes: Optional notes
+
+        Returns:
+            The run_id
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO analysis_runs
+                (id, start_date, end_date, min_gain_pct, universe,
+                 winners_count, total_count, parameters, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    start_date,
+                    end_date,
+                    min_gain_pct,
+                    universe,
+                    winners_count,
+                    total_count,
+                    json.dumps(parameters) if parameters else None,
+                    notes,
+                ),
+            )
+            logger.info("Created analysis run", run_id=run_id)
+            return run_id
+
+    def get_analysis_run(self, run_id: str) -> dict | None:
+        """Get a specific analysis run."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM analysis_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if row:
+                d = dict(row)
+                if d.get("parameters"):
+                    d["parameters"] = json.loads(d["parameters"])
+                return d
+            return None
+
+    def get_analysis_runs(
+        self,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Get all analysis runs, newest first."""
+        query = "SELECT * FROM analysis_runs ORDER BY created_at DESC"
+        params = []
+
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+
+        with self._get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            results = []
+            for row in rows:
+                d = dict(row)
+                if d.get("parameters"):
+                    d["parameters"] = json.loads(d["parameters"])
+                results.append(d)
+            return results
+
+    def update_analysis_run_counts(
+        self,
+        run_id: str,
+        winners_count: int,
+        total_count: int,
+    ) -> int:
+        """Update the counts for an analysis run."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE analysis_runs
+                SET winners_count = ?, total_count = ?
+                WHERE id = ?
+                """,
+                (winners_count, total_count, run_id),
+            )
+            return cursor.rowcount
+
+    def add_analysis_result(
+        self,
+        run_id: str,
+        variable_name: str,
+        population: str,
+        mean: float | None = None,
+        median: float | None = None,
+        std_dev: float | None = None,
+        min_val: float | None = None,
+        max_val: float | None = None,
+        p10: float | None = None,
+        p25: float | None = None,
+        p75: float | None = None,
+        p90: float | None = None,
+        sample_size: int | None = None,
+    ) -> int:
+        """
+        Add a statistical result for a variable.
+
+        Args:
+            run_id: Analysis run ID
+            variable_name: Name of variable (e.g., 'drawdown', 'vol_ratio')
+            population: 'winners' or 'all'
+            mean, median, std_dev: Central tendency and spread
+            min_val, max_val: Range
+            p10, p25, p75, p90: Percentiles
+            sample_size: Number of observations
+
+        Returns:
+            ID of inserted record
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO analysis_results
+                (run_id, variable_name, population, mean, median, std_dev,
+                 min_val, max_val, p10, p25, p75, p90, sample_size)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    variable_name,
+                    population,
+                    mean,
+                    median,
+                    std_dev,
+                    min_val,
+                    max_val,
+                    p10,
+                    p25,
+                    p75,
+                    p90,
+                    sample_size,
+                ),
+            )
+            return cursor.lastrowid
+
+    def add_analysis_results_bulk(self, results: list[dict]) -> int:
+        """
+        Add multiple analysis results at once.
+
+        Args:
+            results: List of dicts with run_id, variable_name, population, and stats
+
+        Returns:
+            Number of rows inserted
+        """
+        with self._get_connection() as conn:
+            cursor = conn.executemany(
+                """
+                INSERT INTO analysis_results
+                (run_id, variable_name, population, mean, median, std_dev,
+                 min_val, max_val, p10, p25, p75, p90, sample_size)
+                VALUES (:run_id, :variable_name, :population, :mean, :median, :std_dev,
+                        :min_val, :max_val, :p10, :p25, :p75, :p90, :sample_size)
+                """,
+                results,
+            )
+            return cursor.rowcount
+
+    def get_analysis_results(
+        self,
+        run_id: str,
+        variable_name: str | None = None,
+        population: str | None = None,
+    ) -> list[dict]:
+        """
+        Get analysis results with optional filters.
+
+        Args:
+            run_id: Analysis run ID
+            variable_name: Optional filter by variable
+            population: Optional filter by 'winners' or 'all'
+
+        Returns:
+            List of result records
+        """
+        query = "SELECT * FROM analysis_results WHERE run_id = ?"
+        params = [run_id]
+
+        if variable_name:
+            query += " AND variable_name = ?"
+            params.append(variable_name)
+
+        if population:
+            query += " AND population = ?"
+            params.append(population)
+
+        query += " ORDER BY variable_name, population"
+
+        with self._get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_analysis_comparison(
+        self,
+        run_id_1: str,
+        run_id_2: str,
+        variable_name: str | None = None,
+    ) -> list[dict]:
+        """
+        Compare analysis results between two runs.
+
+        Returns results for both populations (winners, all) side by side.
+        """
+        query = """
+            SELECT
+                r1.variable_name,
+                r1.population,
+                r1.mean as mean_1,
+                r2.mean as mean_2,
+                r1.median as median_1,
+                r2.median as median_2,
+                r1.p25 as p25_1,
+                r2.p25 as p25_2,
+                r1.p75 as p75_1,
+                r2.p75 as p75_2,
+                r1.sample_size as n_1,
+                r2.sample_size as n_2,
+                CASE
+                    WHEN r1.mean IS NULL OR r1.mean = 0 THEN NULL
+                    ELSE ROUND((r2.mean - r1.mean) / ABS(r1.mean) * 100, 2)
+                END as mean_pct_change
+            FROM analysis_results r1
+            JOIN analysis_results r2
+                ON r1.variable_name = r2.variable_name
+                AND r1.population = r2.population
+            WHERE r1.run_id = ? AND r2.run_id = ?
+        """
+        params = [run_id_1, run_id_2]
+
+        if variable_name:
+            query += " AND r1.variable_name = ?"
+            params.append(variable_name)
+
+        query += " ORDER BY r1.variable_name, r1.population"
+
+        with self._get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_analysis_lift(self, run_id: str) -> list[dict]:
+        """
+        Calculate lift (winners vs all) for each variable.
+
+        Lift = winners_mean / all_mean (for positive metrics)
+        For negative metrics like drawdown, lift = all_mean / winners_mean
+        """
+        query = """
+            SELECT
+                w.variable_name,
+                w.mean as winners_mean,
+                a.mean as all_mean,
+                w.median as winners_median,
+                a.median as all_median,
+                w.sample_size as winners_n,
+                a.sample_size as all_n,
+                CASE
+                    WHEN a.mean IS NULL OR a.mean = 0 THEN NULL
+                    WHEN w.variable_name IN ('drawdown', 'pct_from_sma50', 'pct_from_sma200')
+                        THEN ROUND(a.mean / w.mean, 2)
+                    ELSE ROUND(w.mean / a.mean, 2)
+                END as lift
+            FROM analysis_results w
+            JOIN analysis_results a
+                ON w.variable_name = a.variable_name
+            WHERE w.run_id = ? AND a.run_id = ?
+                AND w.population = 'winners'
+                AND a.population = 'all'
+            ORDER BY lift DESC
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(query, (run_id, run_id)).fetchall()
+            return [dict(row) for row in rows]
+
+    def delete_analysis_run(self, run_id: str) -> int:
+        """Delete an analysis run and all its results."""
+        with self._get_connection() as conn:
+            # Delete results first (foreign key)
+            conn.execute(
+                "DELETE FROM analysis_results WHERE run_id = ?", (run_id,)
+            )
+            cursor = conn.execute(
+                "DELETE FROM analysis_runs WHERE id = ?", (run_id,)
+            )
             return cursor.rowcount

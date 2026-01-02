@@ -1,8 +1,93 @@
-"""Data models for trendline analysis."""
+"""Data models for analysis modules."""
 
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
+
+
+# =============================================================================
+# Statistical Analysis Models
+# =============================================================================
+
+
+@dataclass
+class VariableStats:
+    """Statistical summary for a single variable."""
+
+    variable_name: str
+    mean: float | None = None
+    median: float | None = None
+    std_dev: float | None = None
+    min_val: float | None = None
+    max_val: float | None = None
+    p10: float | None = None
+    p25: float | None = None
+    p75: float | None = None
+    p90: float | None = None
+    sample_size: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for database storage."""
+        return {
+            "variable_name": self.variable_name,
+            "mean": self.mean,
+            "median": self.median,
+            "std_dev": self.std_dev,
+            "min_val": self.min_val,
+            "max_val": self.max_val,
+            "p10": self.p10,
+            "p25": self.p25,
+            "p75": self.p75,
+            "p90": self.p90,
+            "sample_size": self.sample_size,
+        }
+
+
+@dataclass
+class AnalysisConfig:
+    """Configuration for statistical analysis."""
+
+    start_date: str
+    end_date: str
+    min_gain_pct: float = 300.0
+    universe: str = "all"
+    variables: list[str] = field(default_factory=lambda: [
+        "drawdown",
+        "days_declining",
+        "vol_ratio",
+        "days_to_peak",
+        "gain_pct",
+    ])
+
+
+@dataclass
+class AnalysisResult:
+    """Complete analysis result with stats for winners and all stocks."""
+
+    run_id: str
+    config: AnalysisConfig
+    winners_count: int
+    total_count: int
+    winners_stats: dict[str, VariableStats] = field(default_factory=dict)
+    all_stats: dict[str, VariableStats] = field(default_factory=dict)
+    lift: dict[str, float] = field(default_factory=dict)
+
+    def to_summary(self) -> dict[str, Any]:
+        """Create a summary dict for display."""
+        return {
+            "run_id": self.run_id,
+            "period": f"{self.config.start_date} to {self.config.end_date}",
+            "min_gain": f"{self.config.min_gain_pct}%",
+            "universe": self.config.universe,
+            "winners": self.winners_count,
+            "total": self.total_count,
+            "lift": self.lift,
+        }
+
+
+# =============================================================================
+# Trendline Analysis Models
+# =============================================================================
 
 
 @dataclass
