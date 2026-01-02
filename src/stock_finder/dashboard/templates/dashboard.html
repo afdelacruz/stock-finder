@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Finder Research Dashboard</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --border-color: #30363d;
+            --accent-green: #3fb950;
+            --accent-yellow: #d29922;
+            --accent-red: #f85149;
+            --accent-blue: #58a6ff;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            padding: 30px 0;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 10px;
+        }
+
+        .header .meta {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        /* Cards */
+        .card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card h2 {
+            font-size: 1.25rem;
+            margin-bottom: 15px;
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 10px;
+        }
+
+        /* Metrics Grid */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .metric {
+            background-color: var(--bg-tertiary);
+            border-radius: 6px;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .metric .value {
+            font-size: 1.75rem;
+            font-weight: bold;
+            color: var(--accent-blue);
+        }
+
+        .metric .label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 5px;
+        }
+
+        .metric.highlight .value {
+            color: var(--accent-green);
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        th {
+            background-color: var(--bg-tertiary);
+            color: var(--text-secondary);
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+        }
+
+        tr:hover {
+            background-color: var(--bg-tertiary);
+        }
+
+        .num {
+            text-align: right;
+            font-family: 'SF Mono', Monaco, monospace;
+        }
+
+        /* Status badges */
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-green {
+            background-color: rgba(63, 185, 80, 0.2);
+            color: var(--accent-green);
+        }
+
+        .badge-yellow {
+            background-color: rgba(210, 153, 34, 0.2);
+            color: var(--accent-yellow);
+        }
+
+        .badge-red {
+            background-color: rgba(248, 81, 73, 0.2);
+            color: var(--accent-red);
+        }
+
+        /* Lift bars */
+        .lift-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .lift-bar .bar {
+            height: 8px;
+            border-radius: 4px;
+            background-color: var(--accent-blue);
+        }
+
+        .lift-bar.high .bar {
+            background-color: var(--accent-green);
+        }
+
+        .lift-bar.medium .bar {
+            background-color: var(--accent-yellow);
+        }
+
+        .lift-bar.low .bar {
+            background-color: var(--accent-red);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+
+            .header h1 {
+                font-size: 1.5rem;
+            }
+
+            th, td {
+                padding: 8px;
+                font-size: 0.85rem;
+            }
+
+            .metrics-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        /* Section spacing */
+        .section {
+            margin-bottom: 30px;
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            border-top: 1px solid var(--border-color);
+            margin-top: 30px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>Stock Finder Research Dashboard</h1>
+            <p class="meta">
+                Generated: {{ generated_at }} |
+                Run: {{ run_id or 'Latest' }} |
+                Data: {{ data_range }}
+            </p>
+        </header>
+
+        <!-- Summary Metrics -->
+        {% if summary %}
+        <section class="section">
+            <div class="card">
+                <h2>Summary</h2>
+                <div class="metrics-grid">
+                    <div class="metric">
+                        <div class="value">{{ "{:,}".format(summary.total_records) }}</div>
+                        <div class="label">Total Records</div>
+                    </div>
+                    <div class="metric">
+                        <div class="value">{{ "{:,}".format(summary.unique_tickers) }}</div>
+                        <div class="label">Unique Tickers</div>
+                    </div>
+                    <div class="metric highlight">
+                        <div class="value">{{ "{:,.0f}%".format(summary.avg_gain) }}</div>
+                        <div class="label">Average Gain</div>
+                    </div>
+                    <div class="metric">
+                        <div class="value">{{ summary.avg_days|int }} days</div>
+                        <div class="label">Average Duration</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+        {% endif %}
+
+        <!-- Setup Quality -->
+        {% if setup_quality %}
+        <section class="section">
+            <div class="card">
+                <h2>Setup Quality Tiers</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Tier</th>
+                            <th class="num">Count</th>
+                            <th class="num">Avg Gain</th>
+                            <th class="num">Avg Days</th>
+                            <th>Performance</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for tier in setup_quality %}
+                        <tr>
+                            <td>
+                                {% if tier.tier == 'good_deep_vol' %}
+                                    <span class="badge badge-green">Best</span>
+                                {% elif tier.tier == 'ideal' %}
+                                    <span class="badge badge-green">Ideal</span>
+                                {% elif tier.tier == 'weak' %}
+                                    <span class="badge badge-red">Weak</span>
+                                {% else %}
+                                    <span class="badge badge-yellow">{{ tier.tier|replace('_', ' ')|title }}</span>
+                                {% endif %}
+                                {{ tier.tier|replace('_', ' ')|title }}
+                            </td>
+                            <td class="num">{{ "{:,}".format(tier.count) }}</td>
+                            <td class="num">{{ "{:,.0f}%".format(tier.avg_gain) }}</td>
+                            <td class="num">{{ tier.avg_days|int }}</td>
+                            <td>
+                                <div class="lift-bar {{ 'high' if tier.avg_gain > 2000 else 'medium' if tier.avg_gain > 1500 else 'low' }}">
+                                    <div class="bar" style="width: {{ (tier.avg_gain / 30)|int }}px;"></div>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        {% endif %}
+
+        <!-- Theme Performance -->
+        {% if themes %}
+        <section class="section">
+            <div class="card">
+                <h2>Theme Performance</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Theme</th>
+                            <th>Wave</th>
+                            <th class="num">Stocks</th>
+                            <th class="num">Avg Gain</th>
+                            <th class="num">Avg Days</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for theme in themes %}
+                        <tr>
+                            <td>{{ theme.theme }}</td>
+                            <td>{{ theme.wave }}</td>
+                            <td class="num">{{ theme.count }}</td>
+                            <td class="num">{{ "{:,.0f}%".format(theme.avg_gain) }}</td>
+                            <td class="num">{{ theme.avg_days|int }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        {% endif %}
+
+        <!-- Watchlist -->
+        {% if watchlist %}
+        <section class="section">
+            <div class="card">
+                <h2>Current Watchlist</h2>
+                {% if watchlist|length > 0 %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Ticker</th>
+                            <th>Theme</th>
+                            <th class="num">Score</th>
+                            <th class="num">Drawdown</th>
+                            <th class="num">Vol Ratio</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in watchlist %}
+                        <tr>
+                            <td><strong>{{ item.ticker }}</strong></td>
+                            <td>{{ item.theme or '-' }}</td>
+                            <td class="num">{{ item.setup_score or '-' }}</td>
+                            <td class="num">{{ "{:.0%}".format(item.drawdown) if item.drawdown else '-' }}</td>
+                            <td class="num">{{ "{:.2f}x".format(item.vol_ratio) if item.vol_ratio else '-' }}</td>
+                            <td>
+                                <span class="badge {% if item.status == 'triggered' %}badge-green{% elif item.status == 'watching' %}badge-yellow{% else %}badge-red{% endif %}">
+                                    {{ item.status }}
+                                </span>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p style="color: var(--text-secondary);">No items in watchlist.</p>
+                {% endif %}
+            </div>
+        </section>
+        {% endif %}
+
+        <!-- Footer -->
+        <footer class="footer">
+            Generated by Stock Finder |
+            <a href="https://github.com/afdelacruz/stock-finder" style="color: var(--accent-blue);">GitHub</a>
+        </footer>
+    </div>
+</body>
+</html>
