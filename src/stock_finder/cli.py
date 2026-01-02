@@ -1699,6 +1699,303 @@ def dashboard_generate(
         console.print("[dim]Opened in browser[/dim]")
 
 
+# =============================================================================
+# ANALYZE COMMANDS
+# =============================================================================
+
+
+@cli.group()
+def analyze() -> None:
+    """Statistical analysis commands - analyze any time period to derive data-driven criteria."""
+    pass
+
+
+@analyze.command("run")
+@click.option(
+    "--start",
+    type=str,
+    required=True,
+    help="Start date (YYYY-MM-DD)",
+)
+@click.option(
+    "--end",
+    type=str,
+    required=True,
+    help="End date (YYYY-MM-DD)",
+)
+@click.option(
+    "--min-gain",
+    type=float,
+    default=300.0,
+    help="Minimum gain % to qualify as winner (default: 300)",
+)
+@click.option(
+    "--universe",
+    type=str,
+    default="all",
+    help="Ticker universe (default: all)",
+)
+@click.option(
+    "--notes",
+    type=str,
+    default=None,
+    help="Optional notes for this run",
+)
+@click.pass_context
+def analyze_run(
+    ctx: click.Context,
+    start: str,
+    end: str,
+    min_gain: float,
+    universe: str,
+    notes: str | None,
+) -> None:
+    """Run statistical analysis on a time period."""
+    from stock_finder.analysis import AnalysisFramework
+
+    console.print(f"[cyan]Running analysis: {start} to {end}[/cyan]")
+    console.print(f"[dim]Min gain: {min_gain}% | Universe: {universe}[/dim]")
+
+    framework = AnalysisFramework()
+    result = framework.run(
+        start_date=start,
+        end_date=end,
+        min_gain_pct=min_gain,
+        universe=universe,
+        notes=notes,
+    )
+
+    console.print(f"\n[green]Analysis complete: {result.run_id}[/green]")
+    console.print(f"Winners: {result.winners_count:,} | Total: {result.total_count:,}")
+
+    # Show lift summary
+    if result.lift:
+        console.print("\n[bold]Variable Lift (winners vs all):[/bold]")
+        for var, lift_val in sorted(result.lift.items(), key=lambda x: x[1], reverse=True):
+            bar_len = min(int(lift_val * 10), 50)
+            bar = "█" * bar_len
+            console.print(f"  {var:20s} {lift_val:5.2f}x  {bar}")
+
+
+@analyze.command("list")
+@click.option(
+    "--limit",
+    type=int,
+    default=10,
+    help="Number of runs to show",
+)
+@click.pass_context
+def analyze_list(ctx: click.Context, limit: int) -> None:
+    """List past analysis runs."""
+    from stock_finder.analysis import AnalysisFramework
+    from rich.table import Table
+
+    framework = AnalysisFramework()
+    runs = framework.list_runs(limit=limit)
+
+    if not runs:
+        console.print("[yellow]No analysis runs found[/yellow]")
+        return
+
+    table = Table(title="Analysis Runs")
+    table.add_column("Run ID", style="cyan")
+    table.add_column("Period", style="white")
+    table.add_column("Min Gain", style="yellow")
+    table.add_column("Winners", style="green")
+    table.add_column("Total", style="dim")
+    table.add_column("Created", style="dim")
+
+    for run in runs:
+        table.add_row(
+            run["id"],
+            f"{run['start_date']} to {run['end_date']}",
+            f"{run['min_gain_pct']}%",
+            f"{run['winners_count']:,}" if run['winners_count'] else "-",
+            f"{run['total_count']:,}" if run['total_count'] else "-",
+            run['created_at'][:16] if run['created_at'] else "-",
+        )
+
+    console.print(table)
+
+
+@analyze.command("show")
+@click.argument("run_id")
+@click.option(
+    "--variable",
+    type=str,
+    default=None,
+    help="Filter to specific variable",
+)
+@click.pass_context
+def analyze_show(ctx: click.Context, run_id: str, variable: str | None) -> None:
+    """Show results for an analysis run."""
+    from stock_finder.analysis import AnalysisFramework
+    from rich.table import Table
+
+    framework = AnalysisFramework()
+
+    # Get run info
+    run = framework.get_run(run_id)
+    if not run:
+        console.print(f"[red]Run not found: {run_id}[/red]")
+        return
+
+    console.print(f"[cyan]Analysis: {run_id}[/cyan]")
+    console.print(f"Period: {run['start_date']} to {run['end_date']}")
+    console.print(f"Min Gain: {run['min_gain_pct']}% | Winners: {run['winners_count']:,} | Total: {run['total_count']:,}")
+
+    # Get results
+    results = framework.get_results(run_id, variable=variable)
+
+    # Group by variable
+    by_variable: dict = {}
+    for r in results:
+        var = r["variable_name"]
+        if var not in by_variable:
+            by_variable[var] = {}
+        by_variable[var][r["population"]] = r
+
+    # Display table
+    table = Table(title="\nStatistical Results")
+    table.add_column("Variable", style="cyan")
+    table.add_column("Pop", style="dim")
+    table.add_column("Mean", justify="right")
+    table.add_column("Median", justify="right")
+    table.add_column("Std Dev", justify="right")
+    table.add_column("P25", justify="right")
+    table.add_column("P75", justify="right")
+    table.add_column("N", justify="right", style="dim")
+
+    for var in sorted(by_variable.keys()):
+        for pop in ["winners", "all"]:
+            if pop in by_variable[var]:
+                r = by_variable[var][pop]
+                pop_style = "green" if pop == "winners" else "dim"
+                table.add_row(
+                    var if pop == "winners" else "",
+                    f"[{pop_style}]{pop}[/{pop_style}]",
+                    f"{r['mean']:.2f}" if r['mean'] else "-",
+                    f"{r['median']:.2f}" if r['median'] else "-",
+                    f"{r['std_dev']:.2f}" if r['std_dev'] else "-",
+                    f"{r['p25']:.2f}" if r['p25'] else "-",
+                    f"{r['p75']:.2f}" if r['p75'] else "-",
+                    f"{r['sample_size']:,}" if r['sample_size'] else "-",
+                )
+
+    console.print(table)
+
+    # Show lift
+    lift_data = framework.get_lift(run_id)
+    if lift_data:
+        console.print("\n[bold]Lift (Predictive Power):[/bold]")
+        for item in lift_data:
+            var = item["variable_name"]
+            lift = item["lift"]
+            if lift:
+                bar_len = min(int(lift * 10), 50)
+                bar = "█" * bar_len
+                console.print(f"  {var:20s} {lift:5.2f}x  {bar}")
+
+
+@analyze.command("compare")
+@click.argument("run_id_1")
+@click.argument("run_id_2")
+@click.option(
+    "--variable",
+    type=str,
+    default=None,
+    help="Filter to specific variable",
+)
+@click.pass_context
+def analyze_compare(
+    ctx: click.Context,
+    run_id_1: str,
+    run_id_2: str,
+    variable: str | None,
+) -> None:
+    """Compare two analysis runs."""
+    from stock_finder.analysis import AnalysisFramework
+    from rich.table import Table
+
+    framework = AnalysisFramework()
+
+    # Get run info
+    run1 = framework.get_run(run_id_1)
+    run2 = framework.get_run(run_id_2)
+
+    if not run1:
+        console.print(f"[red]Run not found: {run_id_1}[/red]")
+        return
+    if not run2:
+        console.print(f"[red]Run not found: {run_id_2}[/red]")
+        return
+
+    console.print(f"[cyan]Comparing:[/cyan]")
+    console.print(f"  Run 1: {run_id_1} ({run1['start_date']} to {run1['end_date']})")
+    console.print(f"  Run 2: {run_id_2} ({run2['start_date']} to {run2['end_date']})")
+
+    # Get comparison
+    comparison = framework.compare_runs(run_id_1, run_id_2, variable=variable)
+
+    if not comparison:
+        console.print("[yellow]No comparable results found[/yellow]")
+        return
+
+    table = Table(title="\nComparison (Mean Values)")
+    table.add_column("Variable", style="cyan")
+    table.add_column("Pop", style="dim")
+    table.add_column("Run 1", justify="right")
+    table.add_column("Run 2", justify="right")
+    table.add_column("Change", justify="right")
+
+    for row in comparison:
+        change = row.get("mean_pct_change")
+        change_str = f"{change:+.1f}%" if change else "-"
+        change_style = "green" if change and change > 0 else "red" if change and change < 0 else "dim"
+
+        table.add_row(
+            row["variable_name"],
+            row["population"],
+            f"{row['mean_1']:.2f}" if row['mean_1'] else "-",
+            f"{row['mean_2']:.2f}" if row['mean_2'] else "-",
+            f"[{change_style}]{change_str}[/{change_style}]",
+        )
+
+    console.print(table)
+
+
+@analyze.command("delete")
+@click.argument("run_id")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip confirmation",
+)
+@click.pass_context
+def analyze_delete(ctx: click.Context, run_id: str, force: bool) -> None:
+    """Delete an analysis run."""
+    from stock_finder.analysis import AnalysisFramework
+
+    framework = AnalysisFramework()
+
+    run = framework.get_run(run_id)
+    if not run:
+        console.print(f"[red]Run not found: {run_id}[/red]")
+        return
+
+    if not force:
+        console.print(f"[yellow]About to delete:[/yellow] {run_id}")
+        console.print(f"  Period: {run['start_date']} to {run['end_date']}")
+        if not click.confirm("Are you sure?"):
+            console.print("[dim]Cancelled[/dim]")
+            return
+
+    if framework.delete_run(run_id):
+        console.print(f"[green]Deleted: {run_id}[/green]")
+    else:
+        console.print(f"[red]Failed to delete: {run_id}[/red]")
+
+
 def main() -> None:
     """Entry point for the CLI."""
     cli()
