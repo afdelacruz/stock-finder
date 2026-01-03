@@ -14,6 +14,7 @@ from stock_finder.analysis.models import (
 )
 from stock_finder.analysis.framework import AnalysisFramework
 from stock_finder.analysis.statistics import calculate_stats, calculate_lift
+from stock_finder.analysis.deriver import CriteriaDeriver, DerivedCriteria, DerivedThreshold
 
 __all__ = [
     # Statistical analysis
@@ -23,6 +24,10 @@ __all__ = [
     "VariableStats",
     "calculate_stats",
     "calculate_lift",
+    # Criteria derivation
+    "CriteriaDeriver",
+    "DerivedCriteria",
+    "DerivedThreshold",
     # Trendline analysis
     "SwingPoint",
     "TrendlineFit",

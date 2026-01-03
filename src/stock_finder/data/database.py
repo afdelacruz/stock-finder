@@ -246,6 +246,38 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_analysis_results_run ON analysis_results(run_id);
                 CREATE INDEX IF NOT EXISTS idx_analysis_results_variable ON analysis_results(variable_name);
                 CREATE INDEX IF NOT EXISTS idx_analysis_results_population ON analysis_results(population);
+
+                -- Criteria derivation tables
+
+                CREATE TABLE IF NOT EXISTS criteria_sets (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    source_analysis_id TEXT NOT NULL,
+                    regime_tag TEXT,
+                    target_capture_rate REAL,
+                    actual_capture_rate REAL,
+                    is_active BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    notes TEXT,
+                    FOREIGN KEY (source_analysis_id) REFERENCES analysis_runs(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_criteria_sets_active ON criteria_sets(is_active);
+                CREATE INDEX IF NOT EXISTS idx_criteria_sets_regime ON criteria_sets(regime_tag);
+
+                CREATE TABLE IF NOT EXISTS criteria_thresholds (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    criteria_set_id TEXT NOT NULL,
+                    variable_name TEXT NOT NULL,
+                    operator TEXT NOT NULL,
+                    threshold_value REAL NOT NULL,
+                    capture_rate REAL,
+                    exclusion_rate REAL,
+                    FOREIGN KEY (criteria_set_id) REFERENCES criteria_sets(id),
+                    UNIQUE(criteria_set_id, variable_name)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_criteria_thresholds_set ON criteria_thresholds(criteria_set_id);
             """)
         logger.info("Database initialized", path=str(self.db_path))
 
@@ -1536,5 +1568,210 @@ class Database:
             )
             cursor = conn.execute(
                 "DELETE FROM analysis_runs WHERE id = ?", (run_id,)
+            )
+            return cursor.rowcount
+
+    # =========================================================================
+    # Criteria Sets Methods
+    # =========================================================================
+
+    def create_criteria_set(
+        self,
+        criteria_set_id: str,
+        name: str,
+        source_analysis_id: str,
+        regime_tag: str | None = None,
+        target_capture_rate: float | None = None,
+        actual_capture_rate: float | None = None,
+        is_active: bool = False,
+        notes: str | None = None,
+    ) -> str:
+        """
+        Create a new criteria set.
+
+        Args:
+            criteria_set_id: Unique identifier (e.g., 'v1_post_covid')
+            name: Human-readable name
+            source_analysis_id: The analysis run this was derived from
+            regime_tag: Market regime tag (e.g., 'post_covid')
+            target_capture_rate: Desired capture rate when deriving
+            actual_capture_rate: Actual combined capture rate achieved
+            is_active: Whether this is the active criteria set
+            notes: Optional notes
+
+        Returns:
+            The criteria_set_id
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO criteria_sets
+                (id, name, source_analysis_id, regime_tag, target_capture_rate,
+                 actual_capture_rate, is_active, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    criteria_set_id,
+                    name,
+                    source_analysis_id,
+                    regime_tag,
+                    target_capture_rate,
+                    actual_capture_rate,
+                    is_active,
+                    notes,
+                ),
+            )
+            logger.info("Created criteria set", criteria_set_id=criteria_set_id)
+            return criteria_set_id
+
+    def get_criteria_set(self, criteria_set_id: str) -> dict | None:
+        """Get a specific criteria set with its thresholds."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM criteria_sets WHERE id = ?", (criteria_set_id,)
+            ).fetchone()
+            if not row:
+                return None
+
+            result = dict(row)
+
+            # Get thresholds
+            thresholds = conn.execute(
+                "SELECT * FROM criteria_thresholds WHERE criteria_set_id = ?",
+                (criteria_set_id,),
+            ).fetchall()
+            result["thresholds"] = [dict(t) for t in thresholds]
+
+            return result
+
+    def get_criteria_sets(
+        self,
+        regime_tag: str | None = None,
+        active_only: bool = False,
+    ) -> list[dict]:
+        """Get all criteria sets with optional filters."""
+        query = "SELECT * FROM criteria_sets WHERE 1=1"
+        params = []
+
+        if regime_tag:
+            query += " AND regime_tag = ?"
+            params.append(regime_tag)
+
+        if active_only:
+            query += " AND is_active = 1"
+
+        query += " ORDER BY created_at DESC"
+
+        with self._get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_active_criteria_set(self) -> dict | None:
+        """Get the currently active criteria set."""
+        sets = self.get_criteria_sets(active_only=True)
+        if sets:
+            return self.get_criteria_set(sets[0]["id"])
+        return None
+
+    def activate_criteria_set(self, criteria_set_id: str) -> bool:
+        """
+        Activate a criteria set (deactivates all others).
+
+        Returns:
+            True if successful
+        """
+        with self._get_connection() as conn:
+            # Deactivate all
+            conn.execute("UPDATE criteria_sets SET is_active = 0")
+            # Activate this one
+            cursor = conn.execute(
+                "UPDATE criteria_sets SET is_active = 1 WHERE id = ?",
+                (criteria_set_id,),
+            )
+            if cursor.rowcount > 0:
+                logger.info("Activated criteria set", criteria_set_id=criteria_set_id)
+                return True
+            return False
+
+    def add_criteria_threshold(
+        self,
+        criteria_set_id: str,
+        variable_name: str,
+        operator: str,
+        threshold_value: float,
+        capture_rate: float | None = None,
+        exclusion_rate: float | None = None,
+    ) -> int:
+        """
+        Add a threshold to a criteria set.
+
+        Args:
+            criteria_set_id: The criteria set ID
+            variable_name: Variable name (e.g., 'drawdown')
+            operator: Comparison operator ('<=', '>=', '<', '>', '==')
+            threshold_value: The threshold value
+            capture_rate: % of winners captured by this threshold
+            exclusion_rate: % of non-winners excluded by this threshold
+
+        Returns:
+            ID of inserted record
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR REPLACE INTO criteria_thresholds
+                (criteria_set_id, variable_name, operator, threshold_value,
+                 capture_rate, exclusion_rate)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    criteria_set_id,
+                    variable_name,
+                    operator,
+                    threshold_value,
+                    capture_rate,
+                    exclusion_rate,
+                ),
+            )
+            return cursor.lastrowid
+
+    def add_criteria_thresholds_bulk(self, thresholds: list[dict]) -> int:
+        """Add multiple thresholds at once."""
+        with self._get_connection() as conn:
+            cursor = conn.executemany(
+                """
+                INSERT OR REPLACE INTO criteria_thresholds
+                (criteria_set_id, variable_name, operator, threshold_value,
+                 capture_rate, exclusion_rate)
+                VALUES (:criteria_set_id, :variable_name, :operator, :threshold_value,
+                        :capture_rate, :exclusion_rate)
+                """,
+                thresholds,
+            )
+            return cursor.rowcount
+
+    def get_criteria_thresholds(self, criteria_set_id: str) -> list[dict]:
+        """Get all thresholds for a criteria set."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM criteria_thresholds
+                WHERE criteria_set_id = ?
+                ORDER BY variable_name
+                """,
+                (criteria_set_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def delete_criteria_set(self, criteria_set_id: str) -> int:
+        """Delete a criteria set and its thresholds."""
+        with self._get_connection() as conn:
+            # Delete thresholds first
+            conn.execute(
+                "DELETE FROM criteria_thresholds WHERE criteria_set_id = ?",
+                (criteria_set_id,),
+            )
+            cursor = conn.execute(
+                "DELETE FROM criteria_sets WHERE id = ?", (criteria_set_id,)
             )
             return cursor.rowcount
