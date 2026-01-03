@@ -1996,6 +1996,260 @@ def analyze_delete(ctx: click.Context, run_id: str, force: bool) -> None:
         console.print(f"[red]Failed to delete: {run_id}[/red]")
 
 
+# =============================================================================
+# CRITERIA COMMANDS
+# =============================================================================
+
+
+@cli.group()
+def criteria() -> None:
+    """Criteria management - derive, view, and activate criteria sets."""
+    pass
+
+
+@criteria.command("derive")
+@click.argument("analysis_id")
+@click.option(
+    "--capture-rate",
+    type=float,
+    default=0.70,
+    help="Target capture rate for winners (0-1, default: 0.70)",
+)
+@click.option(
+    "--regime",
+    type=str,
+    default=None,
+    help="Market regime tag (e.g., 'post_covid')",
+)
+@click.option(
+    "--name",
+    type=str,
+    default=None,
+    help="Name for the criteria set",
+)
+@click.option(
+    "--notes",
+    type=str,
+    default=None,
+    help="Optional notes",
+)
+@click.option(
+    "--activate",
+    is_flag=True,
+    help="Activate this criteria set after deriving",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be derived without saving",
+)
+@click.pass_context
+def criteria_derive(
+    ctx: click.Context,
+    analysis_id: str,
+    capture_rate: float,
+    regime: str | None,
+    name: str | None,
+    notes: str | None,
+    activate: bool,
+    dry_run: bool,
+) -> None:
+    """Derive criteria thresholds from an analysis run."""
+    from stock_finder.analysis import CriteriaDeriver
+    from rich.table import Table
+
+    console.print(f"[cyan]Deriving criteria from: {analysis_id}[/cyan]")
+    console.print(f"[dim]Target capture rate: {capture_rate:.0%}[/dim]")
+
+    deriver = CriteriaDeriver()
+
+    try:
+        result = deriver.derive(
+            source_analysis_id=analysis_id,
+            target_capture_rate=capture_rate,
+            regime_tag=regime,
+            name=name,
+            notes=notes,
+            save=not dry_run,
+        )
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return
+
+    # Display results
+    if dry_run:
+        console.print("\n[yellow]DRY RUN - Not saved[/yellow]")
+
+    console.print(f"\n[green]Criteria Set: {result.criteria_set_id}[/green]")
+    console.print(f"Combined capture rate: {result.actual_capture_rate:.1%}")
+
+    table = Table(title="\nDerived Thresholds")
+    table.add_column("Variable", style="cyan")
+    table.add_column("Operator")
+    table.add_column("Threshold", justify="right")
+    table.add_column("Captures", justify="right", style="green")
+    table.add_column("Excludes", justify="right", style="yellow")
+
+    for t in result.thresholds:
+        table.add_row(
+            t.variable_name,
+            t.operator,
+            f"{t.threshold_value:.4f}",
+            f"{t.capture_rate:.1%}",
+            f"{t.exclusion_rate:.1%}",
+        )
+
+    console.print(table)
+
+    if activate and not dry_run:
+        deriver.activate(result.criteria_set_id)
+        console.print(f"\n[green]Activated: {result.criteria_set_id}[/green]")
+
+
+@criteria.command("list")
+@click.option(
+    "--regime",
+    type=str,
+    default=None,
+    help="Filter by regime tag",
+)
+@click.option(
+    "--active-only",
+    is_flag=True,
+    help="Show only active criteria set",
+)
+@click.pass_context
+def criteria_list(
+    ctx: click.Context,
+    regime: str | None,
+    active_only: bool,
+) -> None:
+    """List all criteria sets."""
+    from stock_finder.analysis import CriteriaDeriver
+    from rich.table import Table
+
+    deriver = CriteriaDeriver()
+    sets = deriver.list_criteria_sets(regime_tag=regime, active_only=active_only)
+
+    if not sets:
+        console.print("[yellow]No criteria sets found[/yellow]")
+        return
+
+    table = Table(title="Criteria Sets")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name")
+    table.add_column("Source")
+    table.add_column("Regime")
+    table.add_column("Capture", justify="right")
+    table.add_column("Active", justify="center")
+    table.add_column("Created")
+
+    for s in sets:
+        active_mark = "[green]✓[/green]" if s["is_active"] else ""
+        table.add_row(
+            s["id"][:30] + "..." if len(s["id"]) > 30 else s["id"],
+            s["name"][:25] + "..." if len(s["name"]) > 25 else s["name"],
+            s["source_analysis_id"][:20] + "..." if len(s["source_analysis_id"]) > 20 else s["source_analysis_id"],
+            s["regime_tag"] or "-",
+            f"{s['actual_capture_rate']:.1%}" if s["actual_capture_rate"] else "-",
+            active_mark,
+            s["created_at"][:16] if s["created_at"] else "-",
+        )
+
+    console.print(table)
+
+
+@criteria.command("show")
+@click.argument("criteria_id")
+@click.pass_context
+def criteria_show(ctx: click.Context, criteria_id: str) -> None:
+    """Show details of a criteria set."""
+    from stock_finder.analysis import CriteriaDeriver
+    from rich.table import Table
+
+    deriver = CriteriaDeriver()
+    cs = deriver.get_criteria_set(criteria_id)
+
+    if not cs:
+        console.print(f"[red]Criteria set not found: {criteria_id}[/red]")
+        return
+
+    console.print(f"[cyan]Criteria Set: {cs['id']}[/cyan]")
+    console.print(f"Name: {cs['name']}")
+    console.print(f"Source: {cs['source_analysis_id']}")
+    console.print(f"Regime: {cs['regime_tag'] or 'None'}")
+    console.print(f"Target Capture: {cs['target_capture_rate']:.1%}" if cs['target_capture_rate'] else "")
+    console.print(f"Actual Capture: {cs['actual_capture_rate']:.1%}" if cs['actual_capture_rate'] else "")
+    console.print(f"Active: {'Yes' if cs['is_active'] else 'No'}")
+    console.print(f"Created: {cs['created_at']}")
+
+    if cs.get("thresholds"):
+        table = Table(title="\nThresholds")
+        table.add_column("Variable", style="cyan")
+        table.add_column("Operator")
+        table.add_column("Value", justify="right")
+        table.add_column("Captures", justify="right", style="green")
+        table.add_column("Excludes", justify="right", style="yellow")
+
+        for t in cs["thresholds"]:
+            table.add_row(
+                t["variable_name"],
+                t["operator"],
+                f"{t['threshold_value']:.4f}",
+                f"{t['capture_rate']:.1%}" if t["capture_rate"] else "-",
+                f"{t['exclusion_rate']:.1%}" if t["exclusion_rate"] else "-",
+            )
+
+        console.print(table)
+
+
+@criteria.command("activate")
+@click.argument("criteria_id")
+@click.pass_context
+def criteria_activate(ctx: click.Context, criteria_id: str) -> None:
+    """Activate a criteria set (deactivates others)."""
+    from stock_finder.analysis import CriteriaDeriver
+
+    deriver = CriteriaDeriver()
+
+    if deriver.activate(criteria_id):
+        console.print(f"[green]Activated: {criteria_id}[/green]")
+    else:
+        console.print(f"[red]Failed to activate: {criteria_id}[/red]")
+
+
+@criteria.command("delete")
+@click.argument("criteria_id")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip confirmation",
+)
+@click.pass_context
+def criteria_delete(ctx: click.Context, criteria_id: str, force: bool) -> None:
+    """Delete a criteria set."""
+    from stock_finder.analysis import CriteriaDeriver
+
+    deriver = CriteriaDeriver()
+
+    cs = deriver.get_criteria_set(criteria_id)
+    if not cs:
+        console.print(f"[red]Criteria set not found: {criteria_id}[/red]")
+        return
+
+    if not force:
+        console.print(f"[yellow]About to delete:[/yellow] {criteria_id}")
+        console.print(f"  Name: {cs['name']}")
+        if not click.confirm("Are you sure?"):
+            console.print("[dim]Cancelled[/dim]")
+            return
+
+    if deriver.delete(criteria_id):
+        console.print(f"[green]Deleted: {criteria_id}[/green]")
+    else:
+        console.print(f"[red]Failed to delete: {criteria_id}[/red]")
+
+
 def main() -> None:
     """Entry point for the CLI."""
     cli()
